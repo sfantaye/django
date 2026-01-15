@@ -76,9 +76,11 @@ class DistinctOnTests(TestCase):
             (StaffTag.objects.distinct("staff", "tag"), [self.st1]),
             (
                 Tag.objects.order_by("parent__pk", "pk").distinct("parent"),
-                [self.t2, self.t4, self.t1]
-                if connection.features.nulls_order_largest
-                else [self.t1, self.t2, self.t4],
+                (
+                    [self.t2, self.t4, self.t1]
+                    if connection.features.nulls_order_largest
+                    else [self.t1, self.t2, self.t4]
+                ),
             ),
             (
                 StaffTag.objects.select_related("staff")
@@ -176,3 +178,9 @@ class DistinctOnTests(TestCase):
             .order_by("nAmEAlIaS")
         )
         self.assertSequenceEqual(qs, [self.p1_o1, self.p2_o1, self.p3_o1])
+
+    def test_disallowed_update_distinct_on(self):
+        qs = Staff.objects.distinct("organisation").order_by("organisation")
+        msg = "Cannot call update() after .distinct(*fields)."
+        with self.assertRaisesMessage(TypeError, msg):
+            qs.update(name="p4")

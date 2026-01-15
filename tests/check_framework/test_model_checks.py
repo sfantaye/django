@@ -1,5 +1,3 @@
-from unittest import mock
-
 from django.core import checks
 from django.core.checks import Error, Warning
 from django.db import models
@@ -287,8 +285,8 @@ class ConstraintNameTests(TestCase):
         class Model(models.Model):
             class Meta:
                 constraints = [
-                    models.CheckConstraint(check=models.Q(id__gt=0), name="foo"),
-                    models.CheckConstraint(check=models.Q(id__lt=100), name="foo"),
+                    models.CheckConstraint(condition=models.Q(id__gt=0), name="foo"),
+                    models.CheckConstraint(condition=models.Q(id__lt=100), name="foo"),
                 ]
 
         self.assertEqual(
@@ -303,7 +301,7 @@ class ConstraintNameTests(TestCase):
         )
 
     def test_collision_in_different_models(self):
-        constraint = models.CheckConstraint(check=models.Q(id__gt=0), name="foo")
+        constraint = models.CheckConstraint(condition=models.Q(id__gt=0), name="foo")
 
         class Model1(models.Model):
             class Meta:
@@ -328,7 +326,7 @@ class ConstraintNameTests(TestCase):
         class AbstractModel(models.Model):
             class Meta:
                 constraints = [
-                    models.CheckConstraint(check=models.Q(id__gt=0), name="foo")
+                    models.CheckConstraint(condition=models.Q(id__gt=0), name="foo")
                 ]
                 abstract = True
 
@@ -354,7 +352,7 @@ class ConstraintNameTests(TestCase):
             class Meta:
                 constraints = [
                     models.CheckConstraint(
-                        check=models.Q(id__gt=0), name="%(app_label)s_%(class)s_foo"
+                        condition=models.Q(id__gt=0), name="%(app_label)s_%(class)s_foo"
                     ),
                 ]
                 abstract = True
@@ -370,7 +368,7 @@ class ConstraintNameTests(TestCase):
     @modify_settings(INSTALLED_APPS={"append": "basic"})
     @isolate_apps("basic", "check_framework", kwarg_name="apps")
     def test_collision_across_apps(self, apps):
-        constraint = models.CheckConstraint(check=models.Q(id__gt=0), name="foo")
+        constraint = models.CheckConstraint(condition=models.Q(id__gt=0), name="foo")
 
         class Model1(models.Model):
             class Meta:
@@ -397,7 +395,7 @@ class ConstraintNameTests(TestCase):
     @isolate_apps("basic", "check_framework", kwarg_name="apps")
     def test_no_collision_across_apps_interpolation(self, apps):
         constraint = models.CheckConstraint(
-            check=models.Q(id__gt=0), name="%(app_label)s_%(class)s_foo"
+            condition=models.Q(id__gt=0), name="%(app_label)s_%(class)s_foo"
         )
 
         class Model1(models.Model):
@@ -409,138 +407,5 @@ class ConstraintNameTests(TestCase):
             class Meta:
                 app_label = "check_framework"
                 constraints = [constraint]
-
-        self.assertEqual(checks.run_checks(app_configs=apps.get_app_configs()), [])
-
-
-def mocked_is_overridden(self, setting):
-    # Force treating DEFAULT_AUTO_FIELD = 'django.db.models.AutoField' as a not
-    # overridden setting.
-    return (
-        setting != "DEFAULT_AUTO_FIELD"
-        or self.DEFAULT_AUTO_FIELD != "django.db.models.AutoField"
-    )
-
-
-@mock.patch("django.conf.UserSettingsHolder.is_overridden", mocked_is_overridden)
-@override_settings(DEFAULT_AUTO_FIELD="django.db.models.AutoField")
-@isolate_apps("check_framework.apps.CheckDefaultPKConfig", attr_name="apps")
-@override_system_checks([checks.model_checks.check_all_models])
-class ModelDefaultAutoFieldTests(SimpleTestCase):
-    msg = (
-        "Auto-created primary key used when not defining a primary key type, "
-        "by default 'django.db.models.AutoField'."
-    )
-    hint = (
-        "Configure the DEFAULT_AUTO_FIELD setting or the "
-        "CheckDefaultPKConfig.default_auto_field attribute to point to a "
-        "subclass of AutoField, e.g. 'django.db.models.BigAutoField'."
-    )
-
-    def test_auto_created_pk(self):
-        class Model(models.Model):
-            pass
-
-        self.assertEqual(
-            checks.run_checks(app_configs=self.apps.get_app_configs()),
-            [
-                Warning(self.msg, hint=self.hint, obj=Model, id="models.W042"),
-            ],
-        )
-
-    def test_explicit_inherited_pk(self):
-        class Parent(models.Model):
-            id = models.AutoField(primary_key=True)
-
-        class Child(Parent):
-            pass
-
-        self.assertEqual(checks.run_checks(app_configs=self.apps.get_app_configs()), [])
-
-    def test_skipped_on_model_with_invalid_app_label(self):
-        class Model(models.Model):
-            class Meta:
-                app_label = "invalid_app_label"
-
-        self.assertEqual(Model.check(), [])
-
-    def test_skipped_on_abstract_model(self):
-        class Abstract(models.Model):
-            class Meta:
-                abstract = True
-
-        # Call .check() because abstract models are not registered.
-        self.assertEqual(Abstract.check(), [])
-
-    def test_explicit_inherited_parent_link(self):
-        class Parent(models.Model):
-            id = models.AutoField(primary_key=True)
-
-        class Child(Parent):
-            parent_ptr = models.OneToOneField(Parent, models.CASCADE, parent_link=True)
-
-        self.assertEqual(checks.run_checks(app_configs=self.apps.get_app_configs()), [])
-
-    def test_auto_created_inherited_pk(self):
-        class Parent(models.Model):
-            pass
-
-        class Child(Parent):
-            pass
-
-        self.assertEqual(
-            checks.run_checks(app_configs=self.apps.get_app_configs()),
-            [
-                Warning(self.msg, hint=self.hint, obj=Parent, id="models.W042"),
-            ],
-        )
-
-    def test_auto_created_inherited_parent_link(self):
-        class Parent(models.Model):
-            pass
-
-        class Child(Parent):
-            parent_ptr = models.OneToOneField(Parent, models.CASCADE, parent_link=True)
-
-        self.assertEqual(
-            checks.run_checks(app_configs=self.apps.get_app_configs()),
-            [
-                Warning(self.msg, hint=self.hint, obj=Parent, id="models.W042"),
-            ],
-        )
-
-    def test_auto_created_pk_inherited_abstract_parent(self):
-        class Parent(models.Model):
-            class Meta:
-                abstract = True
-
-        class Child(Parent):
-            pass
-
-        self.assertEqual(
-            checks.run_checks(app_configs=self.apps.get_app_configs()),
-            [
-                Warning(self.msg, hint=self.hint, obj=Child, id="models.W042"),
-            ],
-        )
-
-    @override_settings(DEFAULT_AUTO_FIELD="django.db.models.BigAutoField")
-    def test_default_auto_field_setting(self):
-        class Model(models.Model):
-            pass
-
-        self.assertEqual(checks.run_checks(app_configs=self.apps.get_app_configs()), [])
-
-    def test_explicit_pk(self):
-        class Model(models.Model):
-            id = models.BigAutoField(primary_key=True)
-
-        self.assertEqual(checks.run_checks(app_configs=self.apps.get_app_configs()), [])
-
-    @isolate_apps("check_framework.apps.CheckPKConfig", kwarg_name="apps")
-    def test_app_default_auto_field(self, apps):
-        class ModelWithPkViaAppConfig(models.Model):
-            class Meta:
-                app_label = "check_framework.apps.CheckPKConfig"
 
         self.assertEqual(checks.run_checks(app_configs=apps.get_app_configs()), [])

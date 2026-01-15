@@ -4,6 +4,7 @@ they will take data directly from the table of their base class table rather
 than using a new table of their own. This allows them to act as simple proxies,
 providing a modified interface to the data from the base class.
 """
+
 from django.db import models
 
 # A couple of managers for testing managing overriding in proxy model cases.
@@ -129,7 +130,8 @@ class MultiUserProxy(UserProxy, AnotherUserProxy):
         proxy = True
 
 
-# We can still use `select_related()` to include related models in our querysets.
+# We can still use `select_related()` to include related models in our
+# querysets.
 
 
 class Country(models.Model):

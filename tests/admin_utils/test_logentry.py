@@ -5,6 +5,7 @@ from django.contrib.admin.models import ADDITION, CHANGE, DELETION, LogEntry
 from django.contrib.admin.utils import quote
 from django.contrib.auth.models import User
 from django.contrib.contenttypes.models import ContentType
+from django.db.models.signals import post_save, pre_save
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import translation
@@ -26,18 +27,38 @@ class LogEntryTests(TestCase):
             title="Title",
             created=datetime(2008, 3, 12, 11, 54),
         )
-        content_type_pk = ContentType.objects.get_for_model(Article).pk
-        LogEntry.objects.log_action(
+        cls.a2 = Article.objects.create(
+            site=cls.site,
+            title="Title 2",
+            created=datetime(2009, 3, 12, 11, 54),
+        )
+        cls.a3 = Article.objects.create(
+            site=cls.site,
+            title="Title 3",
+            created=datetime(2010, 3, 12, 11, 54),
+        )
+        LogEntry.objects.log_actions(
             cls.user.pk,
-            content_type_pk,
-            cls.a1.pk,
-            repr(cls.a1),
+            [cls.a1],
             CHANGE,
             change_message="Changed something",
         )
 
     def setUp(self):
         self.client.force_login(self.user)
+        self.signals = []
+
+        pre_save.connect(self.pre_save_listener, sender=LogEntry)
+        self.addCleanup(pre_save.disconnect, self.pre_save_listener, sender=LogEntry)
+
+        post_save.connect(self.post_save_listener, sender=LogEntry)
+        self.addCleanup(post_save.disconnect, self.post_save_listener, sender=LogEntry)
+
+    def pre_save_listener(self, instance, **kwargs):
+        self.signals.append(("pre_save", instance))
+
+    def post_save_listener(self, instance, created, **kwargs):
+        self.signals.append(("post_save", instance, created))
 
     def test_logentry_save(self):
         """
@@ -93,7 +114,8 @@ class LogEntryTests(TestCase):
 
     def test_logentry_change_message_localized_datetime_input(self):
         """
-        Localized date/time inputs shouldn't affect changed form data detection.
+        Localized date/time inputs shouldn't affect changed form data
+        detection.
         """
         post_data = {
             "site": self.site.pk,
@@ -227,17 +249,90 @@ class LogEntryTests(TestCase):
         logentry = LogEntry.objects.first()
         self.assertEqual(repr(logentry), str(logentry.action_time))
 
-    def test_log_action(self):
-        content_type_pk = ContentType.objects.get_for_model(Article).pk
-        log_entry = LogEntry.objects.log_action(
-            self.user.pk,
-            content_type_pk,
-            self.a1.pk,
-            repr(self.a1),
-            CHANGE,
-            change_message="Changed something else",
+    def test_log_actions(self):
+        queryset = Article.objects.all().order_by("-id")
+        msg = "Deleted Something"
+        content_type = ContentType.objects.get_for_model(self.a1)
+        self.assertEqual(len(queryset), 3)
+        with self.assertNumQueries(1):
+            result = LogEntry.objects.log_actions(
+                self.user.pk,
+                queryset,
+                DELETION,
+                change_message=msg,
+            )
+        self.assertEqual(len(result), len(queryset))
+        logs = (
+            LogEntry.objects.filter(action_flag=DELETION)
+            .order_by("id")
+            .values_list(
+                "user",
+                "content_type",
+                "object_id",
+                "object_repr",
+                "action_flag",
+                "change_message",
+            )
         )
-        self.assertEqual(log_entry, LogEntry.objects.latest("id"))
+        expected_log_values = [
+            (
+                self.user.pk,
+                content_type.id,
+                str(obj.pk),
+                str(obj),
+                DELETION,
+                msg,
+            )
+            for obj in queryset
+        ]
+        result_logs = [
+            (
+                entry.user_id,
+                entry.content_type_id,
+                str(entry.object_id),
+                entry.object_repr,
+                entry.action_flag,
+                entry.change_message,
+            )
+            for entry in result
+        ]
+        self.assertSequenceEqual(logs, result_logs)
+        self.assertSequenceEqual(logs, expected_log_values)
+        self.assertEqual(self.signals, [])
+
+    def test_log_actions_single_object_param(self):
+        queryset = Article.objects.filter(pk=self.a1.pk)
+        msg = "Deleted Something"
+        content_type = ContentType.objects.get_for_model(self.a1)
+        self.assertEqual(len(queryset), 1)
+        for single_object in (True, False):
+            self.signals = []
+            with self.subTest(single_object=single_object), self.assertNumQueries(1):
+                result = LogEntry.objects.log_actions(
+                    self.user.pk,
+                    queryset,
+                    DELETION,
+                    change_message=msg,
+                    single_object=single_object,
+                )
+                if single_object:
+                    self.assertIsInstance(result, LogEntry)
+                    entry = result
+                else:
+                    self.assertIsInstance(result, list)
+                    self.assertEqual(len(result), 1)
+                    entry = result[0]
+                self.assertEqual(entry.user_id, self.user.pk)
+                self.assertEqual(entry.content_type_id, content_type.id)
+                self.assertEqual(str(entry.object_id), str(self.a1.pk))
+                self.assertEqual(entry.object_repr, str(self.a1))
+                self.assertEqual(entry.action_flag, DELETION)
+                self.assertEqual(entry.change_message, msg)
+                expected_signals = [
+                    ("pre_save", entry),
+                    ("post_save", entry, True),
+                ]
+                self.assertEqual(self.signals, expected_signals)
 
     def test_recentactions_without_content_type(self):
         """
@@ -248,7 +343,7 @@ class LogEntryTests(TestCase):
         link = reverse("admin:admin_utils_article_change", args=(quote(self.a1.pk),))
         should_contain = """<a href="%s">%s</a>""" % (
             escape(link),
-            escape(repr(self.a1)),
+            escape(str(self.a1)),
         )
         self.assertContains(response, should_contain)
         should_contain = "Article"
@@ -281,6 +376,8 @@ class LogEntryTests(TestCase):
             "created_1": "00:00",
         }
         changelist_url = reverse("admin:admin_utils_articleproxy_changelist")
+        expected_signals = []
+        self.assertEqual(self.signals, expected_signals)
 
         # add
         proxy_add_url = reverse("admin:admin_utils_articleproxy_add")
@@ -289,6 +386,10 @@ class LogEntryTests(TestCase):
         proxy_addition_log = LogEntry.objects.latest("id")
         self.assertEqual(proxy_addition_log.action_flag, ADDITION)
         self.assertEqual(proxy_addition_log.content_type, proxy_content_type)
+        expected_signals.extend(
+            [("pre_save", proxy_addition_log), ("post_save", proxy_addition_log, True)]
+        )
+        self.assertEqual(self.signals, expected_signals)
 
         # change
         article_id = proxy_addition_log.object_id
@@ -301,6 +402,10 @@ class LogEntryTests(TestCase):
         proxy_change_log = LogEntry.objects.latest("id")
         self.assertEqual(proxy_change_log.action_flag, CHANGE)
         self.assertEqual(proxy_change_log.content_type, proxy_content_type)
+        expected_signals.extend(
+            [("pre_save", proxy_change_log), ("post_save", proxy_change_log, True)]
+        )
+        self.assertEqual(self.signals, expected_signals)
 
         # delete
         proxy_delete_url = reverse(
@@ -311,6 +416,10 @@ class LogEntryTests(TestCase):
         proxy_delete_log = LogEntry.objects.latest("id")
         self.assertEqual(proxy_delete_log.action_flag, DELETION)
         self.assertEqual(proxy_delete_log.content_type, proxy_content_type)
+        expected_signals.extend(
+            [("pre_save", proxy_delete_log), ("post_save", proxy_delete_log, True)]
+        )
+        self.assertEqual(self.signals, expected_signals)
 
     def test_action_flag_choices(self):
         tests = ((1, "Addition"), (2, "Change"), (3, "Deletion"))
@@ -320,28 +429,27 @@ class LogEntryTests(TestCase):
                 self.assertEqual(log.get_action_flag_display(), display_name)
 
     def test_hook_get_log_entries(self):
-        LogEntry.objects.log_action(
+        LogEntry.objects.log_actions(
             self.user.pk,
-            ContentType.objects.get_for_model(Article).pk,
-            self.a1.pk,
-            "Article changed",
+            [self.a1],
             CHANGE,
             change_message="Article changed message",
         )
         c1 = Car.objects.create()
-        LogEntry.objects.log_action(
+        LogEntry.objects.log_actions(
             self.user.pk,
-            ContentType.objects.get_for_model(Car).pk,
-            c1.pk,
-            "Car created",
+            [c1],
             ADDITION,
             change_message="Car created message",
         )
+        exp_str_article = escape(str(self.a1))
+        exp_str_car = escape(str(c1))
+
         response = self.client.get(reverse("admin:index"))
-        self.assertContains(response, "Article changed")
-        self.assertContains(response, "Car created")
+        self.assertContains(response, exp_str_article)
+        self.assertContains(response, exp_str_car)
 
         # site "custom_admin" only renders log entries of registered models
         response = self.client.get(reverse("custom_admin:index"))
-        self.assertContains(response, "Article changed")
-        self.assertNotContains(response, "Car created")
+        self.assertContains(response, exp_str_article)
+        self.assertNotContains(response, exp_str_car)

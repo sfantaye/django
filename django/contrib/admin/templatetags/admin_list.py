@@ -18,13 +18,14 @@ from django.contrib.admin.views.main import (
 )
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import models
+from django.db.models.constants import LOOKUP_SEP
 from django.template import Library
 from django.template.loader import get_template
 from django.templatetags.static import static
 from django.urls import NoReverseMatch
 from django.utils import formats, timezone
 from django.utils.html import format_html
-from django.utils.safestring import mark_safe
+from django.utils.safestring import SafeString, mark_safe
 from django.utils.text import capfirst
 from django.utils.translation import gettext as _
 
@@ -41,12 +42,14 @@ def paginator_number(cl, i):
     if i == cl.paginator.ELLIPSIS:
         return format_html("{} ", cl.paginator.ELLIPSIS)
     elif i == cl.page_num:
-        return format_html('<span class="this-page">{}</span> ', i)
+        return format_html(
+            '<a role="button" href="" aria-current="page">{}</a> ',
+            i,
+        )
     else:
         return format_html(
-            '<a href="{}"{}>{}</a> ',
+            '<a role="button" href="{}">{}</a> ',
             cl.get_query_string({PAGE_VAR: i}),
-            mark_safe(' class="end"' if i == cl.paginator.num_pages else ""),
             i,
         )
 
@@ -73,6 +76,7 @@ def pagination(cl):
 @register.tag(name="pagination")
 def pagination_tag(parser, token):
     return InclusionAdminNode(
+        "pagination",
         parser,
         token,
         func=pagination,
@@ -99,11 +103,11 @@ def result_headers(cl):
             if field_name == "action_checkbox":
                 aria_label = _("Select all objects on this page for an action")
                 yield {
-                    "text": mark_safe(
+                    "text": SafeString(
                         f'<input type="checkbox" id="action-toggle" '
                         f'aria-label="{aria_label}">'
                     ),
-                    "class_attrib": mark_safe(' class="action-checkbox-column"'),
+                    "class_attrib": SafeString(' class="action-checkbox-column"'),
                     "sortable": False,
                 }
                 continue
@@ -112,7 +116,7 @@ def result_headers(cl):
             # Set ordering for attr that is a property, if defined.
             if isinstance(attr, property) and hasattr(attr, "fget"):
                 admin_order_field = getattr(attr.fget, "admin_order_field", None)
-            if not admin_order_field:
+            if not admin_order_field and LOOKUP_SEP not in field_name:
                 is_field_sortable = False
 
         if not is_field_sortable:
@@ -171,9 +175,9 @@ def result_headers(cl):
             "url_primary": cl.get_query_string({ORDER_VAR: ".".join(o_list_primary)}),
             "url_remove": cl.get_query_string({ORDER_VAR: ".".join(o_list_remove)}),
             "url_toggle": cl.get_query_string({ORDER_VAR: ".".join(o_list_toggle)}),
-            "class_attrib": format_html(' class="{}"', " ".join(th_classes))
-            if th_classes
-            else "",
+            "class_attrib": (
+                format_html(' class="{}"', " ".join(th_classes)) if th_classes else ""
+            ),
         }
 
 
@@ -213,6 +217,7 @@ def items_for_result(cl, result, form):
     for field_index, field_name in enumerate(cl.list_display):
         empty_value_display = cl.model_admin.get_empty_value_display()
         row_classes = ["field-%s" % _coerce_field_name(field_name, field_index)]
+        link_to_changelist = link_in_col(first, field_name, cl)
         try:
             f, attr, value = lookup_field(field_name, result, cl.model_admin)
         except ObjectDoesNotExist:
@@ -221,6 +226,8 @@ def items_for_result(cl, result, form):
             empty_value_display = getattr(
                 attr, "empty_value_display", empty_value_display
             )
+            if isinstance(value, str) and value.strip() == "":
+                value = ""
             if f is None or f.auto_created:
                 if field_name == "action_checkbox":
                     row_classes = ["action-checkbox"]
@@ -239,14 +246,20 @@ def items_for_result(cl, result, form):
                     else:
                         result_repr = field_val
                 else:
-                    result_repr = display_for_field(value, f, empty_value_display)
+                    result_repr = display_for_field(
+                        value,
+                        f,
+                        empty_value_display,
+                        avoid_link=link_to_changelist,
+                    )
                 if isinstance(
                     f, (models.DateField, models.TimeField, models.ForeignKey)
                 ):
                     row_classes.append("nowrap")
-        row_class = mark_safe(' class="%s"' % " ".join(row_classes))
-        # If list_display_links not defined, add the link tag to the first field
-        if link_in_col(first, field_name, cl):
+        row_class = SafeString(' class="%s"' % " ".join(row_classes))
+        # If list_display_links not defined, add the link tag to the first
+        # field
+        if link_to_changelist:
             table_tag = "th" if first else "td"
             first = False
 
@@ -270,9 +283,11 @@ def items_for_result(cl, result, form):
                 link_or_text = format_html(
                     '<a href="{}"{}>{}</a>',
                     url,
-                    format_html(' data-popup-opener="{}"', value)
-                    if cl.is_popup
-                    else "",
+                    (
+                        format_html(' data-popup-opener="{}"', value)
+                        if cl.is_popup
+                        else ""
+                    ),
                     result_repr,
                 )
 
@@ -280,9 +295,9 @@ def items_for_result(cl, result, form):
                 "<{}{}>{}</{}>", table_tag, row_class, link_or_text, table_tag
             )
         else:
-            # By default the fields come from ModelAdmin.list_editable, but if we pull
-            # the fields out of the form instead of list_editable custom admins
-            # can provide fields on a per request basis
+            # By default the fields come from ModelAdmin.list_editable, but if
+            # we pull the fields out of the form instead of list_editable
+            # custom admins can provide fields on a per request basis
             if (
                 form
                 and field_name in form.fields
@@ -347,6 +362,7 @@ def result_list(cl):
 @register.tag(name="result_list")
 def result_list_tag(parser, token):
     return InclusionAdminNode(
+        "result_list",
         parser,
         token,
         func=result_list,
@@ -362,6 +378,7 @@ def date_hierarchy(cl):
     if cl.date_hierarchy:
         field_name = cl.date_hierarchy
         field = get_fields_from_path(cl.model, field_name)[-1]
+        field_verbose_name = field.verbose_name
         if isinstance(field, models.DateTimeField):
             dates_or_datetimes = "datetimes"
         else:
@@ -404,6 +421,7 @@ def date_hierarchy(cl):
                 "choices": [
                     {"title": capfirst(formats.date_format(day, "MONTH_DAY_FORMAT"))}
                 ],
+                "field_name": field_verbose_name,
             }
         elif year_lookup and month_lookup:
             days = getattr(cl.queryset, dates_or_datetimes)(field_name, "day")
@@ -426,6 +444,7 @@ def date_hierarchy(cl):
                     }
                     for day in days
                 ],
+                "field_name": field_verbose_name,
             }
         elif year_lookup:
             months = getattr(cl.queryset, dates_or_datetimes)(field_name, "month")
@@ -443,6 +462,7 @@ def date_hierarchy(cl):
                     }
                     for month in months
                 ],
+                "field_name": field_verbose_name,
             }
         else:
             years = getattr(cl.queryset, dates_or_datetimes)(field_name, "year")
@@ -456,12 +476,14 @@ def date_hierarchy(cl):
                     }
                     for year in years
                 ],
+                "field_name": field_verbose_name,
             }
 
 
 @register.tag(name="date_hierarchy")
 def date_hierarchy_tag(parser, token):
     return InclusionAdminNode(
+        "date_hierarchy",
         parser,
         token,
         func=date_hierarchy,
@@ -486,6 +508,7 @@ def search_form(cl):
 @register.tag(name="search_form")
 def search_form_tag(parser, token):
     return InclusionAdminNode(
+        "search_form",
         parser,
         token,
         func=search_form,
@@ -518,7 +541,7 @@ def admin_actions(context):
 @register.tag(name="admin_actions")
 def admin_actions_tag(parser, token):
     return InclusionAdminNode(
-        parser, token, func=admin_actions, template_name="actions.html"
+        "admin_actions", parser, token, func=admin_actions, template_name="actions.html"
     )
 
 
@@ -526,6 +549,7 @@ def admin_actions_tag(parser, token):
 def change_list_object_tools_tag(parser, token):
     """Display the row of change list object tools."""
     return InclusionAdminNode(
+        "change_list_object_tools",
         parser,
         token,
         func=lambda context: context,

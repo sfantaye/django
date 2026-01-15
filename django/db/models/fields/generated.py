@@ -13,10 +13,9 @@ class GeneratedField(Field):
     db_returning = True
 
     _query = None
-    _resolved_expression = None
     output_field = None
 
-    def __init__(self, *, expression, db_persist=None, output_field=None, **kwargs):
+    def __init__(self, *, expression, output_field, db_persist, **kwargs):
         if kwargs.setdefault("editable", False):
             raise ValueError("GeneratedField cannot be editable.")
         if not kwargs.setdefault("blank", True):
@@ -29,8 +28,9 @@ class GeneratedField(Field):
             raise ValueError("GeneratedField.db_persist must be True or False.")
 
         self.expression = expression
-        self._output_field = output_field
+        self.output_field = output_field
         self.db_persist = db_persist
+        self.has_null_arg = "null" in kwargs
         super().__init__(**kwargs)
 
     @cached_property
@@ -40,7 +40,7 @@ class GeneratedField(Field):
         return Col(self.model._meta.db_table, self, self.output_field)
 
     def get_col(self, alias, output_field=None):
-        if alias != self.model._meta.db_table and output_field is None:
+        if alias != self.model._meta.db_table and output_field in (None, self):
             output_field = self.output_field
         return super().get_col(alias, output_field)
 
@@ -48,14 +48,6 @@ class GeneratedField(Field):
         super().contribute_to_class(*args, **kwargs)
 
         self._query = Query(model=self.model, alias_cols=False)
-        self._resolved_expression = self.expression.resolve_expression(
-            self._query, allow_joins=False
-        )
-        self.output_field = (
-            self._output_field
-            if self._output_field is not None
-            else self._resolved_expression.output_field
-        )
         # Register lookups from the output_field class.
         for lookup_name, lookup in self.output_field.get_class_lookups().items():
             self.register_lookup(lookup, lookup_name=lookup_name)
@@ -64,15 +56,69 @@ class GeneratedField(Field):
         compiler = connection.ops.compiler("SQLCompiler")(
             self._query, connection=connection, using=None
         )
-        return compiler.compile(self._resolved_expression)
+        resolved_expression = self.expression.resolve_expression(
+            self._query, allow_joins=False
+        )
+        sql, params = compiler.compile(resolved_expression)
+        if (
+            getattr(self.expression, "conditional", False)
+            and not connection.features.supports_boolean_expr_in_select_clause
+        ):
+            sql = f"CASE WHEN {sql} THEN 1 ELSE 0 END"
+        return sql, params
+
+    @cached_property
+    def referenced_fields(self):
+        resolved_expression = self.expression.resolve_expression(
+            self._query, allow_joins=False
+        )
+        referenced_fields = []
+        for col in self._query._gen_cols([resolved_expression]):
+            referenced_fields.append(col.target)
+        return frozenset(referenced_fields)
 
     def check(self, **kwargs):
         databases = kwargs.get("databases") or []
-        return [
+        errors = [
             *super().check(**kwargs),
             *self._check_supported(databases),
             *self._check_persistence(databases),
+            *self._check_ignored_options(databases),
         ]
+        output_field_clone = self.output_field.clone()
+        output_field_clone.model = self.model
+        output_field_checks = output_field_clone.check(databases=databases)
+        if output_field_checks:
+            separator = "\n    "
+            error_messages = separator.join(
+                f"{output_check.msg} ({output_check.id})"
+                for output_check in output_field_checks
+                if isinstance(output_check, checks.Error)
+            )
+            if error_messages:
+                errors.append(
+                    checks.Error(
+                        "GeneratedField.output_field has errors:"
+                        f"{separator}{error_messages}",
+                        obj=self,
+                        id="fields.E223",
+                    )
+                )
+            warning_messages = separator.join(
+                f"{output_check.msg} ({output_check.id})"
+                for output_check in output_field_checks
+                if isinstance(output_check, checks.Warning)
+            )
+            if warning_messages:
+                errors.append(
+                    checks.Warning(
+                        "GeneratedField.output_field has warnings:"
+                        f"{separator}{warning_messages}",
+                        obj=self,
+                        id="fields.W224",
+                    )
+                )
+        return errors
 
     def _check_supported(self, databases):
         errors = []
@@ -144,14 +190,27 @@ class GeneratedField(Field):
                 )
         return errors
 
+    def _check_ignored_options(self, databases):
+        warnings = []
+
+        if self.has_null_arg:
+            warnings.append(
+                checks.Warning(
+                    "null has no effect on GeneratedField.",
+                    obj=self,
+                    id="fields.W225",
+                )
+            )
+
+        return warnings
+
     def deconstruct(self):
         name, path, args, kwargs = super().deconstruct()
         del kwargs["blank"]
         del kwargs["editable"]
         kwargs["db_persist"] = self.db_persist
         kwargs["expression"] = self.expression
-        if self._output_field is not None:
-            kwargs["output_field"] = self._output_field
+        kwargs["output_field"] = self.output_field
         return name, path, args, kwargs
 
     def get_internal_type(self):

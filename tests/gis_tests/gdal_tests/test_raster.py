@@ -102,8 +102,9 @@ class GDALRasterTests(SimpleTestCase):
         ]
         msg = "Geotransform must consist of 6 numeric values."
         for geotransform in error_geotransforms:
-            with self.subTest(i=geotransform), self.assertRaisesMessage(
-                ValueError, msg
+            with (
+                self.subTest(i=geotransform),
+                self.assertRaisesMessage(ValueError, msg),
             ):
                 rsmem.geotransform = geotransform
 
@@ -333,7 +334,8 @@ class GDALRasterTests(SimpleTestCase):
         result = rast.bands[0].data()
         if numpy:
             result = result.flatten().tolist()
-        # Band data is equal to zero because no nodata value has been specified.
+        # Band data is equal to zero because no nodata value has been
+        # specified.
         self.assertEqual(result, [0] * 4)
 
     def test_raster_metadata_property(self):
@@ -555,7 +557,8 @@ class GDALRasterTests(SimpleTestCase):
                 ],
             }
         )
-        # Warp raster onto a location that does not cover any pixels of the original.
+        # Warp raster onto a location that does not cover any pixels of the
+        # original.
         result = source.warp({"origin": (200000, 200000)}).bands[0].data()
         if numpy:
             result = result.flatten().tolist()
@@ -827,7 +830,8 @@ class GDALBandTests(SimpleTestCase):
         band = rs.bands[0]
         self.addCleanup(self._remove_aux_file)
 
-        # Setting attributes in write mode raises exception in the _flush method
+        # Setting attributes in write mode raises exception in the _flush
+        # method
         with self.assertRaises(GDALException):
             setattr(band, "nodata_value", 10)
 

@@ -587,7 +587,8 @@ solution is to use ``db_manager()``, like this::
 
     User.objects.db_manager("new_users").create_user(...)
 
-``db_manager()`` returns a copy of the manager bound to the database you specify.
+``db_manager()`` returns a copy of the manager bound to the database you
+specify.
 
 Using ``get_queryset()`` with multiple databases
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -683,6 +684,10 @@ Once you've written your model admin definitions, they can be
 registered with any ``Admin`` instance::
 
     from django.contrib import admin
+    from myapp.models import Author, Book, Publisher
+
+    # Import our custom ModelAdmin and TabularInline from where they're defined.
+    from myproject.admin import MultiDBModelAdmin, MultiDBTabularInline
 
 
     # Specialize the multi-db admin objects for use with specific models.
@@ -740,14 +745,14 @@ primary key of the related object is valid. If the primary key is
 stored on a separate database, it's not possible to easily evaluate
 the validity of a primary key.
 
-If you're using Postgres, Oracle, or MySQL with InnoDB, this is
+If you're using Postgres, SQLite, Oracle, or MySQL with InnoDB, this is
 enforced at the database integrity level -- database level key
 constraints prevent the creation of relations that can't be validated.
 
-However, if you're using SQLite or MySQL with MyISAM tables, there is
-no enforced referential integrity; as a result, you may be able to
-'fake' cross database foreign keys. However, this configuration is not
-officially supported by Django.
+However, if you're using MySQL with MyISAM tables, there is no enforced
+referential integrity; as a result, you may be able to 'fake' cross database
+foreign keys. However, this configuration is not officially supported by
+Django.
 
 .. _contrib_app_multiple_databases:
 

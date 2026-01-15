@@ -5,7 +5,7 @@ from django.db import models
 
 class Square(models.Model):
     root = models.IntegerField()
-    square = models.PositiveIntegerField()
+    square = models.PositiveIntegerField(db_default=9)
 
     def __str__(self):
         return "%s ** 2 == %s" % (self.root, self.square)
@@ -30,6 +30,20 @@ class SchoolClass(models.Model):
     last_updated = models.DateTimeField()
 
     objects = SchoolClassManager()
+
+
+class SchoolBusManager(models.Manager):
+    def get_queryset(self):
+        return super().get_queryset().prefetch_related("schoolclasses")
+
+
+class SchoolBus(models.Model):
+    number = models.IntegerField()
+    schoolclasses = models.ManyToManyField("SchoolClass")
+    objects = SchoolBusManager()
+
+    class Meta:
+        base_manager_name = "objects"
 
 
 class VeryLongModelNameZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ(models.Model):

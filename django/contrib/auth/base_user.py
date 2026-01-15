@@ -2,6 +2,7 @@
 This module allows importing AbstractBaseUser even when django.contrib.auth is
 not in INSTALLED_APPS.
 """
+
 import unicodedata
 
 from django.conf import settings
@@ -35,6 +36,9 @@ class BaseUserManager(models.Manager):
     def get_by_natural_key(self, username):
         return self.get(**{self.model.USERNAME_FIELD: username})
 
+    async def aget_by_natural_key(self, username):
+        return await self.aget(**{self.model.USERNAME_FIELD: username})
+
 
 class AbstractBaseUser(models.Model):
     password = models.CharField(_("password"), max_length=128)
@@ -54,8 +58,8 @@ class AbstractBaseUser(models.Model):
     def __str__(self):
         return self.get_username()
 
-    def save(self, *args, **kwargs):
-        super().save(*args, **kwargs)
+    def save(self, **kwargs):
+        super().save(**kwargs)
         if self._password is not None:
             password_validation.password_changed(self._password, self)
             self._password = None

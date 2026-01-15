@@ -10,6 +10,7 @@ from unittest import mock
 from django.apps import apps
 from django.contrib.sites.models import Site
 from django.core import management
+from django.core.exceptions import SuspiciousOperation
 from django.core.files.temp import NamedTemporaryFile
 from django.core.management import CommandError
 from django.core.management.commands.dumpdata import ProxyModelWarning
@@ -239,7 +240,8 @@ class FixtureLoadingTests(DumpDataAssertMixin, TestCase):
             '"pub_date": "2006-06-16T13:00:00"}}]',
         )
 
-        # Specify one model from one application, and an entire other application.
+        # Specify one model from one application, and an entire other
+        # application.
         self._dumpdata_assert(
             ["fixtures.Category", "sites"],
             '[{"pk": 1, "model": "fixtures.category", "fields": '
@@ -272,7 +274,8 @@ class FixtureLoadingTests(DumpDataAssertMixin, TestCase):
             ],
         )
 
-        # Load fixture 6, JSON file with dynamic ContentType fields. Testing ManyToOne.
+        # Load fixture 6, JSON file with dynamic ContentType fields. Testing
+        # ManyToOne.
         management.call_command("loaddata", "fixture6.json", verbosity=0)
         self.assertQuerySetEqual(
             Tag.objects.all(),
@@ -284,7 +287,8 @@ class FixtureLoadingTests(DumpDataAssertMixin, TestCase):
             ordered=False,
         )
 
-        # Load fixture 7, XML file with dynamic ContentType fields. Testing ManyToOne.
+        # Load fixture 7, XML file with dynamic ContentType fields. Testing
+        # ManyToOne.
         management.call_command("loaddata", "fixture7.xml", verbosity=0)
         self.assertQuerySetEqual(
             Tag.objects.all(),
@@ -298,7 +302,8 @@ class FixtureLoadingTests(DumpDataAssertMixin, TestCase):
             ordered=False,
         )
 
-        # Load fixture 8, JSON file with dynamic Permission fields. Testing ManyToMany.
+        # Load fixture 8, JSON file with dynamic Permission fields. Testing
+        # ManyToMany.
         management.call_command("loaddata", "fixture8.json", verbosity=0)
         self.assertQuerySetEqual(
             Visa.objects.all(),
@@ -312,7 +317,8 @@ class FixtureLoadingTests(DumpDataAssertMixin, TestCase):
             ordered=False,
         )
 
-        # Load fixture 9, XML file with dynamic Permission fields. Testing ManyToMany.
+        # Load fixture 9, XML file with dynamic Permission fields. Testing
+        # ManyToMany.
         management.call_command("loaddata", "fixture9.xml", verbosity=0)
         self.assertQuerySetEqual(
             Visa.objects.all(),
@@ -344,7 +350,8 @@ class FixtureLoadingTests(DumpDataAssertMixin, TestCase):
             '{"name": "Music for all ages", "authors": [3, 1]}}]',
         )
 
-        # But you can get natural keys if you ask for them and they are available
+        # But you can get natural keys if you ask for them and they are
+        # available
         self._dumpdata_assert(
             ["fixtures.book"],
             '[{"pk": 1, "model": "fixtures.book", "fields": '
@@ -514,6 +521,15 @@ class FixtureLoadingTests(DumpDataAssertMixin, TestCase):
             natural_foreign_keys=True,
         )
 
+    def test_deeply_nested_elements(self):
+        """Text inside deeply-nested tags raises SuspiciousOperation."""
+        for file in [
+            "invalid_deeply_nested_elements.xml",
+            "invalid_deeply_nested_elements_natural_key.xml",
+        ]:
+            with self.subTest(file=file), self.assertRaises(SuspiciousOperation):
+                management.call_command("loaddata", file, verbosity=0)
+
     def test_dumpdata_with_excludes(self):
         # Load fixture1 which has a site, two articles, and a category
         Site.objects.all().delete()
@@ -548,7 +564,8 @@ class FixtureLoadingTests(DumpDataAssertMixin, TestCase):
             exclude_list=["fixtures.Article", "fixtures.Book"],
         )
 
-        # Excluding sites and fixtures.Article/Book should only leave fixtures.Category
+        # Excluding sites and fixtures.Article/Book should only leave
+        # fixtures.Category
         self._dumpdata_assert(
             ["sites", "fixtures"],
             '[{"pk": 1, "model": "fixtures.category", "fields": '
@@ -830,13 +847,30 @@ class FixtureLoadingTests(DumpDataAssertMixin, TestCase):
             )
         self.assertEqual(len(warning_list), 0)
 
+    def test_dumpdata_objects_with_prefetch_related(self):
+        management.call_command(
+            "loaddata", "fixture6.json", "fixture8.json", verbosity=0
+        )
+        with self.assertNumQueries(5):
+            self._dumpdata_assert(
+                ["fixtures.visa"],
+                '[{"fields": {"permissions": [["add_user", "auth", "user"]],'
+                '"person": ["Stephane Grappelli"]},'
+                '"model": "fixtures.visa", "pk": 2},'
+                '{"fields": {"permissions": [], "person": ["Prince"]},'
+                '"model": "fixtures.visa", "pk": 3}]',
+                natural_foreign_keys=True,
+                primary_keys="2,3",
+            )
+
     def test_compress_format_loading(self):
         # Load fixture 4 (compressed), using format specification
         management.call_command("loaddata", "fixture4.json", verbosity=0)
         self.assertEqual(Article.objects.get().headline, "Django pets kitten")
 
     def test_compressed_specified_loading(self):
-        # Load fixture 5 (compressed), using format *and* compression specification
+        # Load fixture 5 (compressed), using format *and* compression
+        # specification
         management.call_command("loaddata", "fixture5.json.zip", verbosity=0)
         self.assertEqual(
             Article.objects.get().headline,

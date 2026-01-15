@@ -5,6 +5,7 @@ from django.forms import DateField, Form, SelectDateWidget
 from django.test import override_settings
 from django.utils import translation
 from django.utils.dates import MONTHS_AP
+from django.utils.version import PYPY
 
 from .base import WidgetTest
 
@@ -611,7 +612,11 @@ class SelectDateWidgetTest(WidgetTest):
             ((None, "12", "1"), None),
             (("2000", None, "1"), None),
             (("2000", "12", None), None),
-            ((str(sys.maxsize + 1), "12", "1"), "0-0-0"),
+            (
+                (str(sys.maxsize + 1), "12", "1"),
+                # PyPy does not raise OverflowError.
+                f"{sys.maxsize + 1}-12-1" if PYPY else "0-0-0",
+            ),
         ]
         for values, expected in tests:
             with self.subTest(values=values):
@@ -713,7 +718,7 @@ class SelectDateWidgetTest(WidgetTest):
         form = TestForm()
         self.assertIs(self.widget.use_fieldset, True)
         self.assertHTMLEqual(
-            '<div><fieldset><legend for="id_field_month">Field:</legend>'
+            "<div><fieldset><legend>Field:</legend>"
             '<select name="field_month" required id="id_field_month">'
             '<option value="1">January</option><option value="2">February</option>'
             '<option value="3">March</option><option value="4">April</option>'

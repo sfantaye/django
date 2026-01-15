@@ -1,12 +1,10 @@
 from django.core.exceptions import ValidationError
 from django.forms import URLField
-from django.test import SimpleTestCase, ignore_warnings
-from django.utils.deprecation import RemovedInDjango60Warning
+from django.test import SimpleTestCase
 
 from . import FormFieldAssertionsMixin
 
 
-@ignore_warnings(category=RemovedInDjango60Warning)
 class URLFieldTest(FormFieldAssertionsMixin, SimpleTestCase):
     def test_urlfield_widget(self):
         f = URLField()
@@ -28,9 +26,7 @@ class URLFieldTest(FormFieldAssertionsMixin, SimpleTestCase):
             f.clean("http://abcdefghijklmnopqrstuvwxyz.com")
 
     def test_urlfield_clean(self):
-        # RemovedInDjango60Warning: When the deprecation ends, remove the
-        # assume_scheme argument.
-        f = URLField(required=False, assume_scheme="https")
+        f = URLField(required=False)
         tests = [
             ("http://localhost", "http://localhost"),
             ("http://example.com", "http://example.com"),
@@ -136,27 +132,14 @@ class URLFieldTest(FormFieldAssertionsMixin, SimpleTestCase):
         self.assertIsNone(f.clean(None))
 
     def test_urlfield_unable_to_set_strip_kwarg(self):
-        msg = "__init__() got multiple values for keyword argument 'strip'"
+        msg = "got multiple values for keyword argument 'strip'"
         with self.assertRaisesMessage(TypeError, msg):
             URLField(strip=False)
 
     def test_urlfield_assume_scheme(self):
         f = URLField()
-        # RemovedInDjango60Warning: When the deprecation ends, replace with:
-        # "https://example.com"
-        self.assertEqual(f.clean("example.com"), "http://example.com")
+        self.assertEqual(f.clean("example.com"), "https://example.com")
         f = URLField(assume_scheme="http")
         self.assertEqual(f.clean("example.com"), "http://example.com")
         f = URLField(assume_scheme="https")
         self.assertEqual(f.clean("example.com"), "https://example.com")
-
-
-class URLFieldAssumeSchemeDeprecationTest(FormFieldAssertionsMixin, SimpleTestCase):
-    def test_urlfield_raises_warning(self):
-        msg = (
-            "The default scheme will be changed from 'http' to 'https' in Django 6.0. "
-            "Pass the forms.URLField.assume_scheme argument to silence this warning."
-        )
-        with self.assertWarnsMessage(RemovedInDjango60Warning, msg):
-            f = URLField()
-            self.assertEqual(f.clean("example.com"), "http://example.com")

@@ -1,12 +1,17 @@
 import asyncio
 import sys
+import tempfile
 import threading
+import time
 from pathlib import Path
+from unittest.mock import patch
 
+from asgiref.sync import sync_to_async
 from asgiref.testing import ApplicationCommunicator
 
 from django.contrib.staticfiles.handlers import ASGIStaticFilesHandler
 from django.core.asgi import get_asgi_application
+from django.core.exceptions import RequestDataTooBig
 from django.core.handlers.asgi import ASGIHandler, ASGIRequest
 from django.core.signals import request_finished, request_started
 from django.db import close_old_connections
@@ -18,12 +23,25 @@ from django.test import (
     modify_settings,
     override_settings,
 )
+from django.test.utils import captured_stderr
 from django.urls import path
 from django.utils.http import http_date
+from django.views.decorators.csrf import csrf_exempt
 
 from .urls import sync_waiter, test_filename
 
 TEST_STATIC_ROOT = Path(__file__).parent / "project" / "static"
+
+
+class SignalHandler:
+    """Helper class to track threads and kwargs when signals are dispatched."""
+
+    def __init__(self):
+        super().__init__()
+        self.calls = []
+
+    def __call__(self, signal, **kwargs):
+        self.calls.append({"thread": threading.current_thread(), "kwargs": kwargs})
 
 
 @override_settings(ROOT_URLCONF="asgi.urls")
@@ -32,9 +50,7 @@ class ASGITest(SimpleTestCase):
 
     def setUp(self):
         request_started.disconnect(close_old_connections)
-
-    def tearDown(self):
-        request_started.connect(close_old_connections)
+        self.addCleanup(request_started.connect, close_old_connections)
 
     async def test_get_asgi_application(self):
         """
@@ -62,6 +78,16 @@ class ASGITest(SimpleTestCase):
         # Allow response.close() to finish.
         await communicator.wait()
 
+    async def test_asgi_cookies(self):
+        application = get_asgi_application()
+        scope = self.async_request_factory._base_scope(path="/cookie/")
+        communicator = ApplicationCommunicator(application, scope)
+        await communicator.send_input({"type": "http.request"})
+        response_start = await communicator.receive_output()
+        self.assertIn((b"Set-Cookie", b"key=value; Path=/"), response_start["headers"])
+        # Allow response.close() to finish.
+        await communicator.wait()
+
     # Python's file API is not async compatible. A third-party library such
     # as https://github.com/Tinche/aiofiles allows passing the file to
     # FileResponse as an async iterator. With a sync iterator
@@ -82,7 +108,8 @@ class ASGITest(SimpleTestCase):
         with open(test_filename, "rb") as test_file:
             test_file_contents = test_file.read()
         # Read the response.
-        response_start = await communicator.receive_output()
+        with captured_stderr():
+            response_start = await communicator.receive_output()
         self.assertEqual(response_start["type"], "http.response.start")
         self.assertEqual(response_start["status"], 200)
         headers = response_start["headers"]
@@ -195,6 +222,96 @@ class ASGITest(SimpleTestCase):
         response_body = await communicator.receive_output()
         self.assertEqual(response_body["type"], "http.response.body")
         self.assertEqual(response_body["body"], b"Echo!")
+
+    async def test_create_request_error(self):
+        # Track request_finished signal.
+        signal_handler = SignalHandler()
+        request_finished.connect(signal_handler)
+        self.addCleanup(request_finished.disconnect, signal_handler)
+
+        # Request class that always fails creation with RequestDataTooBig.
+        class TestASGIRequest(ASGIRequest):
+
+            def __init__(self, scope, body_file):
+                super().__init__(scope, body_file)
+                raise RequestDataTooBig()
+
+        # Handler to use the custom request class.
+        class TestASGIHandler(ASGIHandler):
+            request_class = TestASGIRequest
+
+        application = TestASGIHandler()
+        scope = self.async_request_factory._base_scope(path="/not-important/")
+        communicator = ApplicationCommunicator(application, scope)
+
+        # Initiate request.
+        await communicator.send_input({"type": "http.request"})
+        # Give response.close() time to finish.
+        await communicator.wait()
+
+        self.assertEqual(len(signal_handler.calls), 1)
+        self.assertNotEqual(
+            signal_handler.calls[0]["thread"], threading.current_thread()
+        )
+
+    async def test_cancel_post_request_with_sync_processing(self):
+        """
+        The request.body object should be available and readable in view
+        code, even if the ASGIHandler cancels processing part way through.
+        """
+        loop = asyncio.get_event_loop()
+        # Events to monitor the view processing from the parent test code.
+        view_started_event = asyncio.Event()
+        view_finished_event = asyncio.Event()
+        # Record received request body or exceptions raised in the test view
+        outcome = []
+
+        # This view will run in a new thread because it is wrapped in
+        # sync_to_async. The view consumes the POST body data after a short
+        # delay. The test will cancel the request using http.disconnect during
+        # the delay, but because this is a sync view the code runs to
+        # completion. There should be no exceptions raised inside the view
+        # code.
+        @csrf_exempt
+        @sync_to_async
+        def post_view(request):
+            try:
+                loop.call_soon_threadsafe(view_started_event.set)
+                time.sleep(0.1)
+                # Do something to read request.body after pause
+                outcome.append({"request_body": request.body})
+                return HttpResponse("ok")
+            except Exception as e:
+                outcome.append({"exception": e})
+            finally:
+                loop.call_soon_threadsafe(view_finished_event.set)
+
+        # Request class to use the view.
+        class TestASGIRequest(ASGIRequest):
+            urlconf = (path("post/", post_view),)
+
+        # Handler to use request class.
+        class TestASGIHandler(ASGIHandler):
+            request_class = TestASGIRequest
+
+        application = TestASGIHandler()
+        scope = self.async_request_factory._base_scope(
+            method="POST",
+            path="/post/",
+        )
+        communicator = ApplicationCommunicator(application, scope)
+
+        await communicator.send_input({"type": "http.request", "body": b"Body data!"})
+
+        # Wait until the view code has started, then send http.disconnect.
+        await view_started_event.wait()
+        await communicator.send_input({"type": "http.disconnect"})
+        # Wait until view code has finished.
+        await view_finished_event.wait()
+        with self.assertRaises(asyncio.TimeoutError):
+            await communicator.receive_output()
+
+        self.assertEqual(outcome, [{"request_body": b"Body data!"}])
 
     async def test_untouched_request_body_gets_closed(self):
         application = get_asgi_application()
@@ -312,17 +429,12 @@ class ASGITest(SimpleTestCase):
         self.assertEqual(response_body["body"], b"")
 
     async def test_request_lifecycle_signals_dispatched_with_thread_sensitive(self):
-        class SignalHandler:
-            """Track threads handler is dispatched on."""
-
-            threads = []
-
-            def __call__(self, **kwargs):
-                self.threads.append(threading.current_thread())
-
+        # Track request_started and request_finished signals.
         signal_handler = SignalHandler()
         request_started.connect(signal_handler)
+        self.addCleanup(request_started.disconnect, signal_handler)
         request_finished.connect(signal_handler)
+        self.addCleanup(request_finished.disconnect, signal_handler)
 
         # Perform a basic request.
         application = get_asgi_application()
@@ -339,10 +451,11 @@ class ASGITest(SimpleTestCase):
         await communicator.wait()
 
         # AsyncToSync should have executed the signals in the same thread.
-        request_started_thread, request_finished_thread = signal_handler.threads
-        self.assertEqual(request_started_thread, request_finished_thread)
-        request_started.disconnect(signal_handler)
-        request_finished.disconnect(signal_handler)
+        self.assertEqual(len(signal_handler.calls), 2)
+        request_started_call, request_finished_call = signal_handler.calls
+        self.assertEqual(
+            request_started_call["thread"], request_finished_call["thread"]
+        )
 
     async def test_concurrent_async_uses_multiple_thread_pools(self):
         sync_waiter.active_threads.clear()
@@ -376,14 +489,20 @@ class ASGITest(SimpleTestCase):
         sync_waiter.active_threads.clear()
 
     async def test_asyncio_cancel_error(self):
+        view_started = asyncio.Event()
         # Flag to check if the view was cancelled.
         view_did_cancel = False
+        # Track request_finished signal.
+        signal_handler = SignalHandler()
+        request_finished.connect(signal_handler)
+        self.addCleanup(request_finished.disconnect, signal_handler)
 
         # A view that will listen for the cancelled error.
         async def view(request):
             nonlocal view_did_cancel
+            view_started.set()
             try:
-                await asyncio.sleep(0.2)
+                await asyncio.sleep(0.1)
                 return HttpResponse("Hello World!")
             except asyncio.CancelledError:
                 # Set the flag.
@@ -412,6 +531,14 @@ class ASGITest(SimpleTestCase):
         # Give response.close() time to finish.
         await communicator.wait()
         self.assertIs(view_did_cancel, False)
+        # Exactly one call to request_finished handler.
+        self.assertEqual(len(signal_handler.calls), 1)
+        handler_call = signal_handler.calls.pop()
+        # It was NOT on the async thread.
+        self.assertNotEqual(handler_call["thread"], threading.current_thread())
+        # The signal sender is the handler class.
+        self.assertEqual(handler_call["kwargs"], {"sender": TestASGIHandler})
+        view_started.clear()
 
         # Request cycle with a disconnect before the view can respond.
         application = TestASGIHandler()
@@ -419,7 +546,7 @@ class ASGITest(SimpleTestCase):
         communicator = ApplicationCommunicator(application, scope)
         await communicator.send_input({"type": "http.request"})
         # Let the view actually start.
-        await asyncio.sleep(0.1)
+        await view_started.wait()
         # Disconnect the client.
         await communicator.send_input({"type": "http.disconnect"})
         # The handler should not send a response.
@@ -427,11 +554,22 @@ class ASGITest(SimpleTestCase):
             await communicator.receive_output()
         await communicator.wait()
         self.assertIs(view_did_cancel, True)
+        # Exactly one call to request_finished handler.
+        self.assertEqual(len(signal_handler.calls), 1)
+        handler_call = signal_handler.calls.pop()
+        # It was NOT on the async thread.
+        self.assertNotEqual(handler_call["thread"], threading.current_thread())
+        # The signal sender is the handler class.
+        self.assertEqual(handler_call["kwargs"], {"sender": TestASGIHandler})
 
     async def test_asyncio_streaming_cancel_error(self):
         # Similar to test_asyncio_cancel_error(), but during a streaming
         # response.
         view_did_cancel = False
+        # Track request_finished signals.
+        signal_handler = SignalHandler()
+        request_finished.connect(signal_handler)
+        self.addCleanup(request_finished.disconnect, signal_handler)
 
         async def streaming_response():
             nonlocal view_did_cancel
@@ -466,6 +604,13 @@ class ASGITest(SimpleTestCase):
         self.assertEqual(response_body["body"], b"Hello World!")
         await communicator.wait()
         self.assertIs(view_did_cancel, False)
+        # Exactly one call to request_finished handler.
+        self.assertEqual(len(signal_handler.calls), 1)
+        handler_call = signal_handler.calls.pop()
+        # It was NOT on the async thread.
+        self.assertNotEqual(handler_call["thread"], threading.current_thread())
+        # The signal sender is the handler class.
+        self.assertEqual(handler_call["kwargs"], {"sender": TestASGIHandler})
 
         # Request cycle with a disconnect.
         application = TestASGIHandler()
@@ -484,6 +629,13 @@ class ASGITest(SimpleTestCase):
             await communicator.receive_output()
         await communicator.wait()
         self.assertIs(view_did_cancel, True)
+        # Exactly one call to request_finished handler.
+        self.assertEqual(len(signal_handler.calls), 1)
+        handler_call = signal_handler.calls.pop()
+        # It was NOT on the async thread.
+        self.assertNotEqual(handler_call["thread"], threading.current_thread())
+        # The signal sender is the handler class.
+        self.assertEqual(handler_call["kwargs"], {"sender": TestASGIHandler})
 
     async def test_streaming(self):
         scope = self.async_request_factory._base_scope(
@@ -519,3 +671,95 @@ class ASGITest(SimpleTestCase):
         # 'last\n' isn't sent.
         with self.assertRaises(asyncio.TimeoutError):
             await communicator.receive_output(timeout=0.2)
+
+    async def test_read_body_thread(self):
+        """Write runs on correct thread depending on rollover."""
+        handler = ASGIHandler()
+        loop_thread = threading.current_thread()
+
+        called_threads = []
+
+        def write_wrapper(data):
+            called_threads.append(threading.current_thread())
+            return original_write(data)
+
+        # In-memory write (no rollover expected).
+        in_memory_chunks = [
+            {"type": "http.request", "body": b"small", "more_body": False}
+        ]
+
+        async def receive():
+            return in_memory_chunks.pop(0)
+
+        with tempfile.SpooledTemporaryFile(max_size=1024, mode="w+b") as temp_file:
+            original_write = temp_file.write
+            with (
+                patch(
+                    "django.core.handlers.asgi.tempfile.SpooledTemporaryFile",
+                    return_value=temp_file,
+                ),
+                patch.object(temp_file, "write", side_effect=write_wrapper),
+            ):
+                await handler.read_body(receive)
+        # Write was called in the event loop thread.
+        self.assertIn(loop_thread, called_threads)
+
+        # Clear thread log before next test.
+        called_threads.clear()
+
+        # Rollover to disk (write should occur in a threadpool thread).
+        rolled_chunks = [
+            {"type": "http.request", "body": b"A" * 16, "more_body": True},
+            {"type": "http.request", "body": b"B" * 16, "more_body": False},
+        ]
+
+        async def receive_rolled():
+            return rolled_chunks.pop(0)
+
+        with (
+            override_settings(FILE_UPLOAD_MAX_MEMORY_SIZE=10),
+            tempfile.SpooledTemporaryFile(max_size=10, mode="w+b") as temp_file,
+        ):
+            original_write = temp_file.write
+            # roll_over force in handlers.
+            with (
+                patch(
+                    "django.core.handlers.asgi.tempfile.SpooledTemporaryFile",
+                    return_value=temp_file,
+                ),
+                patch.object(temp_file, "write", side_effect=write_wrapper),
+            ):
+                await handler.read_body(receive_rolled)
+        # The second write should have rolled over to disk.
+        self.assertTrue(any(t != loop_thread for t in called_threads))
+
+    def test_multiple_cookie_headers_http2(self):
+        test_cases = [
+            {
+                "label": "RFC-compliant headers (no semicolon)",
+                "headers": [
+                    (b"cookie", b"a=abc"),
+                    (b"cookie", b"b=def"),
+                    (b"cookie", b"c=ghi"),
+                ],
+            },
+            {
+                # Some clients may send cookies with trailing semicolons.
+                "label": "Headers with trailing semicolons",
+                "headers": [
+                    (b"cookie", b"a=abc;"),
+                    (b"cookie", b"b=def;"),
+                    (b"cookie", b"c=ghi;"),
+                ],
+            },
+        ]
+
+        for case in test_cases:
+            with self.subTest(case["label"]):
+                scope = self.async_request_factory._base_scope(
+                    path="/", http_version="2.0"
+                )
+                scope["headers"] = case["headers"]
+                request = ASGIRequest(scope, None)
+                self.assertEqual(request.META["HTTP_COOKIE"], "a=abc; b=def; c=ghi")
+                self.assertEqual(request.COOKIES, {"a": "abc", "b": "def", "c": "ghi"})

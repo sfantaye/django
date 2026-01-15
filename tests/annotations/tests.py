@@ -1,7 +1,9 @@
 import datetime
 from decimal import Decimal
+from unittest import skipUnless
 
 from django.core.exceptions import FieldDoesNotExist, FieldError
+from django.db import connection
 from django.db.models import (
     BooleanField,
     Case,
@@ -12,9 +14,11 @@ from django.db.models import (
     Exists,
     ExpressionWrapper,
     F,
+    FilteredRelation,
     FloatField,
     Func,
     IntegerField,
+    JSONField,
     Max,
     OuterRef,
     Q,
@@ -36,6 +40,7 @@ from django.db.models.functions import (
 from django.db.models.sql.query import get_field_names_from_opts
 from django.test import TestCase, skipUnlessDBFeature
 from django.test.utils import register_lookup
+from django.utils.deprecation import RemovedInDjango70Warning
 
 from .models import (
     Author,
@@ -43,6 +48,7 @@ from .models import (
     Company,
     DepartmentStore,
     Employee,
+    JsonModel,
     Publisher,
     Store,
     Ticket,
@@ -568,6 +574,16 @@ class NonAggregateAnnotationTestCase(TestCase):
         self.assertEqual(book["other_rating"], 4)
         self.assertEqual(book["other_isbn"], "155860191")
 
+    def test_values_fields_annotations_order(self):
+        qs = Book.objects.annotate(other_rating=F("rating") - 1).values(
+            "other_rating", "rating"
+        )
+        book = qs.get(pk=self.b1.pk)
+        self.assertEqual(
+            list(book.items()),
+            [("other_rating", self.b1.rating - 1), ("rating", self.b1.rating)],
+        )
+
     def test_values_with_pk_annotation(self):
         # annotate references a field in values() with pk
         publishers = Publisher.objects.values("id", "book__rating").annotate(
@@ -955,6 +971,24 @@ class NonAggregateAnnotationTestCase(TestCase):
         ):
             Book.objects.annotate(BooleanField(), Value(False), is_book=True)
 
+    def test_complex_annotations_must_have_an_alias(self):
+        complex_annotations = [
+            F("rating") * F("price"),
+            Value("title"),
+            Case(When(pages__gte=400, then=Value("Long")), default=Value("Short")),
+            Subquery(
+                Book.objects.filter(publisher_id=OuterRef("pk"))
+                .order_by("-pubdate")
+                .values("name")[:1]
+            ),
+            Exists(Book.objects.filter(publisher_id=OuterRef("pk"))),
+        ]
+        msg = "Complex annotations require an alias"
+        for annotation in complex_annotations:
+            with self.subTest(annotation=annotation):
+                with self.assertRaisesMessage(TypeError, msg):
+                    Book.objects.annotate(annotation)
+
     def test_chaining_annotation_filter_with_m2m(self):
         qs = (
             Author.objects.filter(
@@ -986,7 +1020,7 @@ class NonAggregateAnnotationTestCase(TestCase):
             .values("publisher")
             .annotate(count=Count("pk"))
             .values("count")
-        )
+        )[:1]
         publisher_books_qs = (
             Publisher.objects.annotate(
                 total_books=Count("book"),
@@ -1125,12 +1159,31 @@ class NonAggregateAnnotationTestCase(TestCase):
 
     def test_alias_sql_injection(self):
         crafted_alias = """injected_name" from "annotations_book"; --"""
+        # RemovedInDjango70Warning: When the deprecation ends, replace with:
+        # msg = (
+        #    "Column aliases cannot contain whitespace characters, hashes, "
+        #    "quotation marks, semicolons, percent signs, or SQL comments."
+        # )
         msg = (
-            "Column aliases cannot contain whitespace characters, quotation marks, "
-            "semicolons, or SQL comments."
+            "Column aliases cannot contain whitespace characters, hashes, quotation "
+            "marks, semicolons, or SQL comments."
         )
         with self.assertRaisesMessage(ValueError, msg):
             Book.objects.annotate(**{crafted_alias: Value(1)})
+
+    def test_alias_filtered_relation_sql_injection(self):
+        crafted_alias = """injected_name" from "annotations_book"; --"""
+        # RemovedInDjango70Warning: When the deprecation ends, replace with:
+        # msg = (
+        #    "Column aliases cannot contain whitespace characters, hashes, "
+        #    "quotation marks, semicolons, percent signs, or SQL comments."
+        # )
+        msg = (
+            "Column aliases cannot contain whitespace characters, hashes, quotation "
+            "marks, semicolons, or SQL comments."
+        )
+        with self.assertRaisesMessage(ValueError, msg):
+            Book.objects.annotate(**{crafted_alias: FilteredRelation("author")})
 
     def test_alias_forbidden_chars(self):
         tests = [
@@ -1144,18 +1197,53 @@ class NonAggregateAnnotationTestCase(TestCase):
             "ali/*as",
             "alias*/",
             "alias;",
-            # [] are used by MSSQL.
+            # RemovedInDjango70Warning: When the deprecation ends, add this:
+            # "alias%",
+            # [] and # are used by MSSQL.
             "alias[",
             "alias]",
+            "ali#as",
         ]
+        # RemovedInDjango70Warning: When the deprecation ends, replace with:
+        # msg = (
+        #    "Column aliases cannot contain whitespace characters, hashes, "
+        #    "quotation marks, semicolons, percent signs, or SQL comments."
+        # )
         msg = (
-            "Column aliases cannot contain whitespace characters, quotation marks, "
-            "semicolons, or SQL comments."
+            "Column aliases cannot contain whitespace characters, hashes, quotation "
+            "marks, semicolons, or SQL comments."
         )
         for crafted_alias in tests:
             with self.subTest(crafted_alias):
                 with self.assertRaisesMessage(ValueError, msg):
                     Book.objects.annotate(**{crafted_alias: Value(1)})
+
+                with self.assertRaisesMessage(ValueError, msg):
+                    Book.objects.annotate(
+                        **{crafted_alias: FilteredRelation("authors")}
+                    )
+
+    def test_alias_containing_percent_sign_deprecation(self):
+        msg = "Using percent signs in a column alias is deprecated."
+        with self.assertRaisesMessage(RemovedInDjango70Warning, msg):
+            Book.objects.annotate(**{"alias%": Value(1)})
+
+    @skipUnless(connection.vendor == "postgresql", "PostgreSQL tests")
+    @skipUnlessDBFeature("supports_json_field")
+    def test_set_returning_functions(self):
+        class JSONBPathQuery(Func):
+            function = "jsonb_path_query"
+            output_field = JSONField()
+            set_returning = True
+
+        test_model = JsonModel.objects.create(
+            data={"key": [{"id": 1, "name": "test1"}, {"id": 2, "name": "test2"}]}, id=1
+        )
+        qs = JsonModel.objects.annotate(
+            table_element=JSONBPathQuery("data", Value("$.key[*]"))
+        ).filter(pk=test_model.pk)
+
+        self.assertEqual(qs.count(), len(qs))
 
 
 class AliasTests(TestCase):
@@ -1421,11 +1509,58 @@ class AliasTests(TestCase):
                 with self.assertRaisesMessage(FieldError, msg):
                     getattr(qs, operation)("rating_alias")
 
+    def test_alias_after_values(self):
+        qs = Book.objects.values_list("pk").alias(other_pk=F("pk"))
+        self.assertEqual(qs.get(pk=self.b1.pk), (self.b1.pk,))
+
     def test_alias_sql_injection(self):
         crafted_alias = """injected_name" from "annotations_book"; --"""
+        # RemovedInDjango70Warning: When the deprecation ends, replace with:
+        # msg = (
+        #    "Column aliases cannot contain whitespace characters, hashes, "
+        #    "quotation marks, semicolons, percent signs, or SQL comments."
+        # )
         msg = (
-            "Column aliases cannot contain whitespace characters, quotation marks, "
-            "semicolons, or SQL comments."
+            "Column aliases cannot contain whitespace characters, hashes, quotation "
+            "marks, semicolons, or SQL comments."
         )
         with self.assertRaisesMessage(ValueError, msg):
             Book.objects.alias(**{crafted_alias: Value(1)})
+
+    def test_alias_filtered_relation_sql_injection(self):
+        crafted_alias = """injected_name" from "annotations_book"; --"""
+        # RemovedInDjango70Warning: When the deprecation ends, replace with:
+        # msg = (
+        #    "Column aliases cannot contain whitespace characters, hashes, "
+        #    "quotation marks, semicolons, percent signs, or SQL comments."
+        # )
+        msg = (
+            "Column aliases cannot contain whitespace characters, hashes, quotation "
+            "marks, semicolons, or SQL comments."
+        )
+        with self.assertRaisesMessage(ValueError, msg):
+            Book.objects.alias(**{crafted_alias: FilteredRelation("authors")})
+
+    def test_alias_filtered_relation_sql_injection_dollar_sign(self):
+        qs = Book.objects.alias(
+            **{"crafted_alia$": FilteredRelation("authors")}
+        ).values("name", "crafted_alia$")
+        if connection.features.prohibits_dollar_signs_in_column_aliases:
+            msg = (
+                "Dollar signs are not permitted in column aliases on "
+                f"{connection.display_name}."
+            )
+            with self.assertRaisesMessage(ValueError, msg):
+                list(qs)
+        else:
+            self.assertEqual(qs.first()["name"], self.b1.name)
+
+    def test_values_wrong_alias(self):
+        expected_message = (
+            "Cannot resolve keyword 'alias_typo' into field. Choices are: %s"
+        )
+        alias_fields = ", ".join(
+            sorted(["my_alias"] + list(get_field_names_from_opts(Book._meta)))
+        )
+        with self.assertRaisesMessage(FieldError, expected_message % alias_fields):
+            Book.objects.alias(my_alias=F("pk")).order_by("alias_typo")

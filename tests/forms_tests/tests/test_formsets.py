@@ -149,6 +149,12 @@ class FormsFormsetTestCase(SimpleTestCase):
         self.assertFalse(formset.is_valid())
         self.assertFalse(formset.has_changed())
 
+    def test_formset_name(self):
+        ArticleFormSet = formset_factory(ArticleForm)
+        ChoiceFormSet = formset_factory(Choice)
+        self.assertEqual(ArticleFormSet.__name__, "ArticleFormSet")
+        self.assertEqual(ChoiceFormSet.__name__, "ChoiceFormSet")
+
     def test_form_kwargs_formset(self):
         """
         Custom kwargs set on the formset instance are passed to the
@@ -186,8 +192,8 @@ class FormsFormsetTestCase(SimpleTestCase):
         self.assertIs(formset.empty_form.empty_permitted, True)
 
     def test_formset_validation(self):
-        # FormSet instances can also have an error attribute if validation failed for
-        # any of the forms.
+        # FormSet instances can also have an error attribute if validation
+        # failed for any of the forms.
         formset = self.make_choiceformset([("Calexico", "")])
         self.assertFalse(formset.is_valid())
         self.assertEqual(formset.errors, [{"votes": ["This field is required."]}])
@@ -217,9 +223,12 @@ class FormsFormsetTestCase(SimpleTestCase):
             [("Calexico", "100"), ("Any1", "42"), ("Any2", "101")]
         )
 
-        with mock.patch(
-            "django.forms.formsets.ManagementForm.is_valid", mocked_is_valid
-        ), mock.patch("django.forms.forms.BaseForm.full_clean", mocked_full_clean):
+        with (
+            mock.patch(
+                "django.forms.formsets.ManagementForm.is_valid", mocked_is_valid
+            ),
+            mock.patch("django.forms.forms.BaseForm.full_clean", mocked_full_clean),
+        ):
             self.assertTrue(formset.is_valid())
         self.assertEqual(is_valid_counter.call_count, 1)
         self.assertEqual(full_clean_counter.call_count, 4)

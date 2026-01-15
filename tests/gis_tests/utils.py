@@ -4,6 +4,7 @@ from functools import wraps
 from unittest import mock
 
 from django.conf import settings
+from django.contrib.gis.geos.libgeos import geos_version_tuple
 from django.db import DEFAULT_DB_ALIAS, connection
 from django.db.models import Func
 
@@ -31,6 +32,12 @@ def skipUnlessGISLookup(*gis_lookups):
 _default_db = settings.DATABASES[DEFAULT_DB_ALIAS]["ENGINE"].rsplit(".")[-1]
 # MySQL spatial indices can't handle NULL geometries.
 gisfield_may_be_null = _default_db != "mysql"
+# GEOSWKTWriter_write() behavior was changed in GEOS 3.12+ to include
+# parentheses for sub-members. MariaDB doesn't accept WKT representations with
+# additional parentheses for MultiPoint. This is an accepted bug (MDEV-36166)
+# in MariaDB that should be fixed in the future.
+cannot_save_multipoint = connection.ops.mariadb and geos_version_tuple() >= (3, 12)
+can_save_multipoint = not cannot_save_multipoint
 
 
 class FuncTestMixin:
@@ -64,12 +71,7 @@ class FuncTestMixin:
 
         vendor_impl = "as_" + connection.vendor
         __getattribute__original = Func.__getattribute__
-        self.func_patcher = mock.patch.object(
-            Func, "__getattribute__", __getattribute__
-        )
-        self.func_patcher.start()
+        func_patcher = mock.patch.object(Func, "__getattribute__", __getattribute__)
+        func_patcher.start()
+        self.addCleanup(func_patcher.stop)
         super().setUp()
-
-    def tearDown(self):
-        super().tearDown()
-        self.func_patcher.stop()

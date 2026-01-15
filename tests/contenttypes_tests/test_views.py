@@ -8,7 +8,7 @@ from django.contrib.sites.shortcuts import get_current_site
 from django.http import Http404, HttpRequest
 from django.test import TestCase, override_settings
 
-from .models import (
+from .models import (  # isort:skip
     Article,
     Author,
     FooWithBrokenAbsoluteUrl,
@@ -17,8 +17,9 @@ from .models import (
     ModelWithM2MToSite,
     ModelWithNullFKToSite,
     SchemeIncludedURL,
+    Site as MockSite,
+    UUIDModel,
 )
-from .models import Site as MockSite
 
 
 @override_settings(ROOT_URLCONF="contenttypes_tests.urls")
@@ -62,7 +63,10 @@ class ContentTypesViewsTests(TestCase):
         Site.objects.clear_cache()
 
     def test_shortcut_with_absolute_url(self):
-        "Can view a shortcut for an Author object that has a get_absolute_url method"
+        """
+        Can view a shortcut for an Author object that has a get_absolute_url
+        method
+        """
         for obj in Author.objects.all():
             with self.subTest(obj=obj):
                 short_url = "/shortcut/%s/%s/" % (
@@ -150,10 +154,8 @@ class ContentTypesViewsSiteRelTests(TestCase):
         """
         The shortcut view works if a model's ForeignKey to site is None.
         """
-        get_model.side_effect = (
-            lambda *args, **kwargs: MockSite
-            if args[0] == "sites.Site"
-            else ModelWithNullFKToSite
+        get_model.side_effect = lambda *args, **kwargs: (
+            MockSite if args[0] == "sites.Site" else ModelWithNullFKToSite
         )
 
         obj = ModelWithNullFKToSite.objects.create(title="title")
@@ -172,10 +174,8 @@ class ContentTypesViewsSiteRelTests(TestCase):
         site if it's attached to the object or to the domain of the first site
         found in the m2m relationship.
         """
-        get_model.side_effect = (
-            lambda *args, **kwargs: MockSite
-            if args[0] == "sites.Site"
-            else ModelWithM2MToSite
+        get_model.side_effect = lambda *args, **kwargs: (
+            MockSite if args[0] == "sites.Site" else ModelWithM2MToSite
         )
 
         # get_current_site() will lookup a Site object, so these must match the
@@ -267,3 +267,12 @@ class ShortcutViewTests(TestCase):
         obj = FooWithBrokenAbsoluteUrl.objects.create(name="john")
         with self.assertRaises(AttributeError):
             shortcut(self.request, user_ct.id, obj.id)
+
+    def test_invalid_uuid_pk_raises_404(self):
+        content_type = ContentType.objects.get_for_model(UUIDModel)
+        invalid_uuid = "1234-zzzz-5678-0000-invaliduuid"
+        with self.assertRaisesMessage(
+            Http404,
+            f"Content type {content_type.id} object {invalid_uuid} doesn’t exist",
+        ):
+            shortcut(self.request, content_type.id, invalid_uuid)

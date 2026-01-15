@@ -27,16 +27,16 @@ template system a programmer uses.
 Although Django comes with a full stack for convenience, the pieces of the
 stack are independent of another wherever possible.
 
-.. _`loose coupling and tight cohesion`: http://wiki.c2.com/?CouplingAndCohesion
+.. _`loose coupling and tight cohesion`: https://wiki.c2.com/?CouplingAndCohesion
 
 .. _less-code:
 
 Less code
 ---------
 
-Django apps should use as little code as possible; they should lack boilerplate.
-Django should take full advantage of Python's dynamic capabilities, such as
-introspection.
+Django apps should use as little code as possible; they should lack
+boilerplate. Django should take full advantage of Python's dynamic
+capabilities, such as introspection.
 
 .. _quick-development:
 
@@ -66,7 +66,7 @@ as possible.
 
     The `discussion of DRY on the Portland Pattern Repository`__
 
-    __ http://wiki.c2.com/?DontRepeatYourself
+    __ https://wiki.c2.com/?DontRepeatYourself
 
 .. _explicit-is-better-than-implicit:
 
@@ -254,10 +254,6 @@ enough programming-esque functionality, such as branching and looping, that is
 essential for making presentation-related decisions. The :ref:`Django Template
 Language (DTL) <template-language-intro>` aims to avoid advanced logic.
 
-The Django template system recognizes that templates are most often written by
-*designers*, not *programmers*, and therefore should not assume Python
-knowledge.
-
 Safety and security
 -------------------
 
@@ -314,7 +310,7 @@ The core goals of Django's :doc:`cache framework </topics/cache>` are:
 Less code
 ---------
 
-A cache should be as fast as possible.  Hence, all framework code surrounding
+A cache should be as fast as possible. Hence, all framework code surrounding
 the cache backend should be kept to the absolute minimum, especially for
 ``get()`` operations.
 

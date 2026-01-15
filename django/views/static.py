@@ -2,6 +2,7 @@
 Views and functions for serving static files. These are only to be used
 during development, and SHOULD NOT be used in a production setting.
 """
+
 import mimetypes
 import posixpath
 from pathlib import Path
@@ -36,7 +37,7 @@ def serve(request, path, document_root=None, show_indexes=False):
 
     in your URLconf. You must provide the ``document_root`` param. You may
     also set ``show_indexes`` to ``True`` if you'd like to serve a basic index
-    of the directory.  This index view will use the template hardcoded below,
+    of the directory. This index view will use the template hardcoded below,
     but if you'd like to override it, you can create a template called
     ``static/directory_index.html``.
     """
@@ -104,7 +105,7 @@ def was_modified_since(header=None, mtime=0):
     Was something modified since the user last downloaded it?
 
     header
-      This is the value of the If-Modified-Since header.  If this is None,
+      This is the value of the If-Modified-Since header. If this is None,
       I'll just return True.
 
     mtime

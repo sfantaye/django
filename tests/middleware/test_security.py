@@ -130,9 +130,9 @@ class SecurityMiddlewareTest(SimpleTestCase):
     def test_sts_subdomains_and_preload(self):
         """
         With SECURE_HSTS_SECONDS non-zero, SECURE_HSTS_INCLUDE_SUBDOMAINS and
-        SECURE_HSTS_PRELOAD True, the middleware adds a "Strict-Transport-Security"
-        header containing both the "includeSubDomains" and "preload" directives
-        to the response.
+        SECURE_HSTS_PRELOAD True, the middleware adds a
+        "Strict-Transport-Security" header containing both the
+        "includeSubDomains" and "preload" directives to the response.
         """
         response = self.process_response(secure=True)
         self.assertEqual(
@@ -248,8 +248,9 @@ class SecurityMiddlewareTest(SimpleTestCase):
             (("strict-origin", "origin"), "strict-origin,origin"),
         )
         for value, expected in tests:
-            with self.subTest(value=value), override_settings(
-                SECURE_REFERRER_POLICY=value
+            with (
+                self.subTest(value=value),
+                override_settings(SECURE_REFERRER_POLICY=value),
             ):
                 self.assertEqual(
                     self.process_response().headers["Referrer-Policy"],
@@ -287,8 +288,11 @@ class SecurityMiddlewareTest(SimpleTestCase):
         """
         tests = ["same-origin", "same-origin-allow-popups", "unsafe-none"]
         for value in tests:
-            with self.subTest(value=value), override_settings(
-                SECURE_CROSS_ORIGIN_OPENER_POLICY=value,
+            with (
+                self.subTest(value=value),
+                override_settings(
+                    SECURE_CROSS_ORIGIN_OPENER_POLICY=value,
+                ),
             ):
                 self.assertEqual(
                     self.process_response().headers["Cross-Origin-Opener-Policy"],

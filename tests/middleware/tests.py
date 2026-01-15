@@ -2,6 +2,7 @@ import gzip
 import random
 import re
 import struct
+import zlib
 from io import BytesIO
 from unittest import mock
 from urllib.parse import quote
@@ -107,11 +108,11 @@ class CommonMiddlewareTest(SimpleTestCase):
         self.assertEqual(resp.url, "/slash/?test=slash/")
 
     @override_settings(APPEND_SLASH=True, DEBUG=True)
-    def test_append_slash_no_redirect_on_POST_in_DEBUG(self):
+    def test_append_slash_no_redirect_in_DEBUG(self):
         """
         While in debug mode, an exception is raised with a warning
-        when a failed attempt is made to POST, PUT, or PATCH to an URL which
-        would normally be redirected to a slashed version.
+        when a failed attempt is made to DELETE, POST, PUT, or PATCH to an URL
+        which would normally be redirected to a slashed version.
         """
         msg = "maintaining %s data. Change your form to point to testserver/slash/"
         request = self.rf.get("/slash")
@@ -124,6 +125,9 @@ class CommonMiddlewareTest(SimpleTestCase):
             CommonMiddleware(get_response_404)(request)
         request = self.rf.get("/slash")
         request.method = "PATCH"
+        with self.assertRaisesMessage(RuntimeError, msg % request.method):
+            CommonMiddleware(get_response_404)(request)
+        request = self.rf.delete("/slash")
         with self.assertRaisesMessage(RuntimeError, msg % request.method):
             CommonMiddleware(get_response_404)(request)
 
@@ -347,6 +351,19 @@ class CommonMiddlewareTest(SimpleTestCase):
         response = CommonMiddleware(get_response)(self.rf.get("/"))
         self.assertEqual(int(response.headers["Content-Length"]), bad_content_length)
 
+    @override_settings(APPEND_SLASH=True)
+    def test_content_length_header_added_to_append_slash_redirect(self):
+        """
+        The Content-Length header is set when redirecting with the APPEND_SLASH
+        setting.
+        """
+        request = self.rf.get("/customurlconf/slash")
+        request.urlconf = "middleware.extra_urls"
+        r = CommonMiddleware(get_response_404)(request)
+        self.assertEqual(r.status_code, 301)
+        self.assertEqual(r.url, "/customurlconf/slash/")
+        self.assertTrue(r.has_header("Content-Length"))
+
     # Other tests
 
     @override_settings(DISALLOWED_USER_AGENTS=[re.compile(r"foo")])
@@ -386,7 +403,7 @@ class CommonMiddlewareTest(SimpleTestCase):
 
 @override_settings(
     IGNORABLE_404_URLS=[re.compile(r"foo")],
-    MANAGERS=[("PHD", "PHB@dilbert.com")],
+    MANAGERS=["manager@example.com"],
 )
 class BrokenLinkEmailsMiddlewareTest(SimpleTestCase):
     rf = RequestFactory()
@@ -851,9 +868,9 @@ class GZipMiddlewareTest(SimpleTestCase):
     def setUp(self):
         self.req = self.request_factory.get("/")
         self.req.META["HTTP_ACCEPT_ENCODING"] = "gzip, deflate"
-        self.req.META[
-            "HTTP_USER_AGENT"
-        ] = "Mozilla/5.0 (Windows NT 5.1; rv:9.0.1) Gecko/20100101 Firefox/9.0.1"
+        self.req.META["HTTP_USER_AGENT"] = (
+            "Mozilla/5.0 (Windows NT 5.1; rv:9.0.1) Gecko/20100101 Firefox/9.0.1"
+        )
         self.resp = HttpResponse()
         self.resp.status_code = 200
         self.resp.content = self.compressible_string
@@ -864,8 +881,8 @@ class GZipMiddlewareTest(SimpleTestCase):
 
     @staticmethod
     def decompress(gzipped_string):
-        with gzip.GzipFile(mode="rb", fileobj=BytesIO(gzipped_string)) as f:
-            return f.read()
+        # Use zlib to ensure gzipped_string contains exactly one gzip stream.
+        return zlib.decompress(gzipped_string, zlib.MAX_WBITS | 16)
 
     @staticmethod
     def get_mtime(gzipped_string):

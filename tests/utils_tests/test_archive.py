@@ -3,6 +3,7 @@ import stat
 import sys
 import tempfile
 import unittest
+import zipfile
 
 from django.core.exceptions import SuspiciousOperation
 from django.test import SimpleTestCase
@@ -26,11 +27,9 @@ except ImportError:
 class TestArchive(unittest.TestCase):
     def setUp(self):
         self.testdir = os.path.join(os.path.dirname(__file__), "archives")
-        self.old_cwd = os.getcwd()
+        old_cwd = os.getcwd()
         os.chdir(self.testdir)
-
-    def tearDown(self):
-        os.chdir(self.old_cwd)
+        self.addCleanup(os.chdir, old_cwd)
 
     def test_extract_function(self):
         with os.scandir(self.testdir) as entries:
@@ -96,3 +95,21 @@ class TestArchiveInvalid(SimpleTestCase):
             with self.subTest(entry), tempfile.TemporaryDirectory() as tmpdir:
                 with self.assertRaisesMessage(SuspiciousOperation, msg % invalid_path):
                     archive.extract(os.path.join(archives_dir, entry), tmpdir)
+
+    def test_extract_function_traversal_startswith(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = os.path.abspath(tmpdir)
+            tarfile_handle = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
+            tar_path = tarfile_handle.name
+            tarfile_handle.close()
+            self.addCleanup(os.remove, tar_path)
+
+            malicious_member = os.path.join(base + "abc", "evil.txt")
+            with zipfile.ZipFile(tar_path, "w") as zf:
+                zf.writestr(malicious_member, "evil\n")
+                zf.writestr("test.txt", "data\n")
+
+            with self.assertRaisesMessage(
+                SuspiciousOperation, "Archive contains invalid path"
+            ):
+                archive.extract(tar_path, base)

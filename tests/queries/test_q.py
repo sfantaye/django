@@ -1,4 +1,7 @@
+from datetime import datetime
+
 from django.core.exceptions import FieldError
+from django.db import connection
 from django.db.models import (
     BooleanField,
     Exists,
@@ -9,7 +12,13 @@ from django.db.models import (
     Value,
 )
 from django.db.models.expressions import NegatedExpression, RawSQL
-from django.db.models.functions import Lower
+from django.db.models.functions import ExtractDay, Lower, TruncDate
+from django.db.models.lookups import (
+    Exact,
+    IntegerFieldExact,
+    IntegerLessThanOrEqual,
+    IsNull,
+)
 from django.db.models.sql.where import NothingNode
 from django.test import SimpleTestCase, TestCase
 
@@ -263,6 +272,91 @@ class QTests(SimpleTestCase):
                     Q(*items, _connector=connector),
                 )
 
+    def test_connector_validation(self):
+        msg = f"_connector must be one of {Q.AND!r}, {Q.OR!r}, {Q.XOR!r}, or None."
+        with self.assertRaisesMessage(ValueError, msg):
+            Q(_connector="evil")
+
+    def test_referenced_base_fields(self):
+        # Make sure Q.referenced_base_fields retrieves all base fields from
+        # both filters and F expressions.
+        tests = [
+            (Q(field_1=1) & Q(field_2=1), {"field_1", "field_2"}),
+            (
+                Q(Exact(F("field_3"), IsNull(F("field_4"), True))),
+                {"field_3", "field_4"},
+            ),
+            (Q(Exact(Q(field_5=F("field_6")), True)), {"field_5", "field_6"}),
+            (Q(field_2=1), {"field_2"}),
+            (Q(field_7__lookup=True), {"field_7"}),
+            (Q(field_7__joined_field__lookup=True), {"field_7"}),
+        ]
+        combined_q = Q(1)
+        combined_q_base_fields = set()
+        for q, expected_base_fields in tests:
+            combined_q &= q
+            combined_q_base_fields |= expected_base_fields
+        tests.append((combined_q, combined_q_base_fields))
+        for q, expected_base_fields in tests:
+            with self.subTest(q=q):
+                self.assertEqual(
+                    q.referenced_base_fields,
+                    expected_base_fields,
+                )
+
+    def test_replace_expressions(self):
+        replacements = {F("timestamp"): Value(None)}
+        self.assertEqual(
+            Q(timestamp__date__day=25).replace_expressions(replacements),
+            Q(timestamp__date__day=25),
+        )
+        replacements = {F("timestamp"): Value(datetime(2025, 10, 23))}
+        self.assertEqual(
+            Q(timestamp__date__day=13).replace_expressions(replacements),
+            Q(
+                IntegerFieldExact(
+                    ExtractDay(TruncDate(Value(datetime(2025, 10, 23)))),
+                    13,
+                )
+            ),
+        )
+        self.assertEqual(
+            Q(timestamp__date__day__lte=25).replace_expressions(replacements),
+            Q(
+                IntegerLessThanOrEqual(
+                    ExtractDay(TruncDate(Value(datetime(2025, 10, 23)))),
+                    25,
+                )
+            ),
+        )
+        self.assertEqual(
+            (
+                Q(Q(timestamp__date__day__lte=25), timestamp__date__day=13)
+            ).replace_expressions(replacements),
+            (
+                Q(
+                    Q(
+                        IntegerLessThanOrEqual(
+                            ExtractDay(TruncDate(Value(datetime(2025, 10, 23)))),
+                            25,
+                        )
+                    ),
+                    IntegerFieldExact(
+                        ExtractDay(TruncDate(Value(datetime(2025, 10, 23)))),
+                        13,
+                    ),
+                )
+            ),
+        )
+        self.assertEqual(
+            Q(timestamp=None).replace_expressions(replacements),
+            Q(IsNull(Value(datetime(2025, 10, 23)), True)),
+        )
+        self.assertEqual(
+            Q(timestamp__date__day__invalid=25).replace_expressions(replacements),
+            Q(timestamp__date__day__invalid=25),
+        )
+
 
 class QCheckTests(TestCase):
     def test_basic(self):
@@ -299,3 +393,6 @@ class QCheckTests(TestCase):
             f"Got a database error calling check() on {q!r}: ",
             cm.records[0].getMessage(),
         )
+
+        # We must leave the connection in a usable state (#35712).
+        self.assertTrue(connection.is_usable())

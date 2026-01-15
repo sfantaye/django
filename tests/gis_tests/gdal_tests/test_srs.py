@@ -1,5 +1,3 @@
-from unittest import skipIf
-
 from django.contrib.gis.gdal import (
     GDAL_VERSION,
     AxisOrder,
@@ -112,7 +110,8 @@ srlist = (
             (("projcs", 11), "AXIS"),
         ),
     ),
-    # This is really ESRI format, not WKT -- but the import should work the same
+    # This is really ESRI format, not WKT -- but the import should work the
+    # same
     TestSRS(
         'LOCAL_CS["Non-Earth (Meter)",LOCAL_DATUM["Local Datum",32767],'
         'UNIT["Meter",1],AXIS["X",EAST],AXIS["Y",NORTH]]',
@@ -356,9 +355,9 @@ class SpatialRefTest(SimpleTestCase):
             self.assertEqual(srs.name, "DHDN / Soldner 39 Langschoß")
             self.assertEqual(srs.wkt, wkt)
             self.assertIn("Langschoß", srs.pretty_wkt)
-            self.assertIn("Langschoß", srs.xml)
+            if GDAL_VERSION < (3, 9):
+                self.assertIn("Langschoß", srs.xml)
 
-    @skipIf(GDAL_VERSION < (3, 0), "GDAL >= 3.0 is required")
     def test_axis_order(self):
         wgs84_trad = SpatialReference(4326, axis_order=AxisOrder.TRADITIONAL)
         wgs84_auth = SpatialReference(4326, axis_order=AxisOrder.AUTHORITY)
@@ -379,12 +378,6 @@ class SpatialRefTest(SimpleTestCase):
         msg = "SpatialReference.axis_order must be an AxisOrder instance."
         with self.assertRaisesMessage(ValueError, msg):
             SpatialReference(4326, axis_order="other")
-
-    @skipIf(GDAL_VERSION > (3, 0), "GDAL < 3.0 doesn't support authority.")
-    def test_axis_order_non_traditional_invalid(self):
-        msg = "AxisOrder.AUTHORITY is not supported in GDAL < 3.0."
-        with self.assertRaisesMessage(ValueError, msg):
-            SpatialReference(4326, axis_order=AxisOrder.AUTHORITY)
 
     def test_esri(self):
         srs = SpatialReference("NAD83")

@@ -1,17 +1,11 @@
 from django.core import mail
-from django.core.management import call_command
+from django.core.management import CommandError, call_command
 from django.test import SimpleTestCase, override_settings
 
 
 @override_settings(
-    ADMINS=(
-        ("Admin", "admin@example.com"),
-        ("Admin and Manager", "admin_and_manager@example.com"),
-    ),
-    MANAGERS=(
-        ("Manager", "manager@example.com"),
-        ("Admin and Manager", "admin_and_manager@example.com"),
-    ),
+    ADMINS=["admin@example.com", "admin_and_manager@example.com"],
+    MANAGERS=["manager@example.com", "admin_and_manager@example.com"],
 )
 class SendTestEmailManagementCommand(SimpleTestCase):
     """
@@ -45,6 +39,18 @@ class SendTestEmailManagementCommand(SimpleTestCase):
                 "joe@example.com",
             ],
         )
+
+    def test_missing_receivers(self):
+        """
+        The command should complain if no receivers are given (and --admins or
+        --managers are not set).
+        """
+        msg = (
+            "You must specify some email recipients, or pass the --managers or "
+            "--admin options."
+        )
+        with self.assertRaisesMessage(CommandError, msg):
+            call_command("sendtestemail")
 
     def test_manager_receivers(self):
         """

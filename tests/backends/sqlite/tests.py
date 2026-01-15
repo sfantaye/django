@@ -1,11 +1,14 @@
 import os
 import re
+import sqlite3
 import tempfile
 import threading
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from unittest import mock
 
+from django.core.exceptions import ImproperlyConfigured
 from django.db import (
     DEFAULT_DB_ALIAS,
     NotSupportedError,
@@ -15,8 +18,8 @@ from django.db import (
 )
 from django.db.models import Aggregate, Avg, StdDev, Sum, Variance
 from django.db.utils import ConnectionHandler
-from django.test import TestCase, TransactionTestCase, override_settings
-from django.test.utils import isolate_apps
+from django.test import SimpleTestCase, TestCase, TransactionTestCase, override_settings
+from django.test.utils import CaptureQueriesContext, isolate_apps
 
 from ..models import Item, Object, Square
 
@@ -107,12 +110,35 @@ class Tests(TestCase):
             connections["default"].close()
             self.assertTrue(os.path.isfile(os.path.join(tmp, "test.db")))
 
-    @mock.patch.object(connection, "get_database_version", return_value=(3, 26))
+    @mock.patch.object(connection, "get_database_version", return_value=(3, 36))
     def test_check_database_version_supported(self, mocked_get_database_version):
-        msg = "SQLite 3.27 or later is required (found 3.26)."
+        msg = "SQLite 3.37 or later is required (found 3.36)."
         with self.assertRaisesMessage(NotSupportedError, msg):
             connection.check_database_version_supported()
         self.assertTrue(mocked_get_database_version.called)
+
+    def test_init_command(self):
+        settings_dict = {
+            "default": {
+                "ENGINE": "django.db.backends.sqlite3",
+                "NAME": ":memory:",
+                "OPTIONS": {
+                    "init_command": "PRAGMA synchronous=3; PRAGMA cache_size=2000;",
+                },
+            }
+        }
+        connections = ConnectionHandler(settings_dict)
+        connections["default"].ensure_connection()
+        try:
+            with connections["default"].cursor() as cursor:
+                cursor.execute("PRAGMA synchronous")
+                value = cursor.fetchone()[0]
+                self.assertEqual(value, 3)
+                cursor.execute("PRAGMA cache_size")
+                value = cursor.fetchone()[0]
+                self.assertEqual(value, 2000)
+        finally:
+            connections["default"]._close()
 
 
 @unittest.skipUnless(connection.vendor == "sqlite", "SQLite tests")
@@ -190,15 +216,28 @@ class LastExecutedQueryTest(TestCase):
         substituted = "SELECT '\"''\\'"
         self.assertEqual(connection.queries[-1]["sql"], substituted)
 
-    def test_large_number_of_parameters(self):
-        # If SQLITE_MAX_VARIABLE_NUMBER (default = 999) has been changed to be
-        # greater than SQLITE_MAX_COLUMN (default = 2000), last_executed_query
-        # can hit the SQLITE_MAX_COLUMN limit (#26063).
-        with connection.cursor() as cursor:
-            sql = "SELECT MAX(%s)" % ", ".join(["%s"] * 2001)
-            params = list(range(2001))
-            # This should not raise an exception.
-            cursor.db.ops.last_executed_query(cursor.cursor, sql, params)
+    def test_parameter_count_exceeds_variable_or_column_limit(self):
+        sql = "SELECT MAX(%s)" % ", ".join(["%s"] * 1001)
+        params = list(range(1001))
+        for label, limit, current_limit in [
+            (
+                "variable",
+                sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER,
+                connection.features.max_query_params,
+            ),
+            (
+                "column",
+                sqlite3.SQLITE_LIMIT_COLUMN,
+                connection.connection.getlimit(sqlite3.SQLITE_LIMIT_COLUMN),
+            ),
+        ]:
+            with self.subTest(limit=label):
+                connection.connection.setlimit(limit, 1000)
+                self.addCleanup(connection.connection.setlimit, limit, current_limit)
+                with connection.cursor() as cursor:
+                    # This should not raise an exception.
+                    cursor.db.ops.last_executed_query(cursor.cursor, sql, params)
+                connection.connection.setlimit(limit, current_limit)
 
 
 @unittest.skipUnless(connection.vendor == "sqlite", "SQLite tests")
@@ -245,3 +284,55 @@ class ThreadSharing(TransactionTestCase):
             for conn in thread_connections:
                 if conn is not main_connection:
                     conn.close()
+
+
+@unittest.skipUnless(connection.vendor == "sqlite", "SQLite tests")
+class TestTransactionMode(SimpleTestCase):
+    databases = {"default"}
+
+    def test_default_transaction_mode(self):
+        with CaptureQueriesContext(connection) as captured_queries:
+            with transaction.atomic():
+                pass
+
+        begin_query, commit_query = captured_queries
+        self.assertEqual(begin_query["sql"], "BEGIN")
+        self.assertEqual(commit_query["sql"], "COMMIT")
+
+    def test_invalid_transaction_mode(self):
+        msg = (
+            "settings.DATABASES['default']['OPTIONS']['transaction_mode'] is "
+            "improperly configured to 'invalid'. Use one of 'DEFERRED', 'EXCLUSIVE', "
+            "'IMMEDIATE', or None."
+        )
+        with self.change_transaction_mode("invalid") as new_connection:
+            with self.assertRaisesMessage(ImproperlyConfigured, msg):
+                new_connection.ensure_connection()
+
+    def test_valid_transaction_modes(self):
+        valid_transaction_modes = ("deferred", "immediate", "exclusive")
+        for transaction_mode in valid_transaction_modes:
+            with (
+                self.subTest(transaction_mode=transaction_mode),
+                self.change_transaction_mode(transaction_mode) as new_connection,
+                CaptureQueriesContext(new_connection) as captured_queries,
+            ):
+                new_connection.set_autocommit(
+                    False, force_begin_transaction_with_broken_autocommit=True
+                )
+                new_connection.commit()
+                expected_transaction_mode = transaction_mode.upper()
+                begin_sql = captured_queries[0]["sql"]
+                self.assertEqual(begin_sql, f"BEGIN {expected_transaction_mode}")
+
+    @contextmanager
+    def change_transaction_mode(self, transaction_mode):
+        new_connection = connection.copy()
+        new_connection.settings_dict["OPTIONS"] = {
+            **new_connection.settings_dict["OPTIONS"],
+            "transaction_mode": transaction_mode,
+        }
+        try:
+            yield new_connection
+        finally:
+            new_connection._close()

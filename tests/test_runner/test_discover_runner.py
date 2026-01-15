@@ -16,7 +16,6 @@ from django.test.utils import (
     captured_stderr,
     captured_stdout,
 )
-from django.utils.version import PY312
 
 
 @contextmanager
@@ -45,6 +44,7 @@ def change_loader_patterns(patterns):
 @mock.patch.dict(os.environ, {}, clear=True)
 @mock.patch.object(multiprocessing, "cpu_count", return_value=12)
 # Python 3.8 on macOS defaults to 'spawn' mode.
+# Python 3.14 on POSIX systems defaults to 'forkserver' mode.
 @mock.patch.object(multiprocessing, "get_start_method", return_value="fork")
 class DiscoverRunnerParallelArgumentTests(SimpleTestCase):
     def get_parser(self):
@@ -97,6 +97,16 @@ class DiscoverRunnerParallelArgumentTests(SimpleTestCase):
         mocked_cpu_count,
     ):
         mocked_get_start_method.return_value = "forkserver"
+        self.assertEqual(get_max_test_processes(), 12)
+        with mock.patch.dict(os.environ, {"DJANGO_TEST_PROCESSES": "7"}):
+            self.assertEqual(get_max_test_processes(), 7)
+
+    def test_get_max_test_processes_other(
+        self,
+        mocked_get_start_method,
+        mocked_cpu_count,
+    ):
+        mocked_get_start_method.return_value = "other"
         self.assertEqual(get_max_test_processes(), 1)
         with mock.patch.dict(os.environ, {"DJANGO_TEST_PROCESSES": "7"}):
             self.assertEqual(get_max_test_processes(), 1)
@@ -364,7 +374,8 @@ class DiscoverRunnerTests(SimpleTestCase):
 
     def test_duplicates_ignored(self):
         """
-        Tests shouldn't be discovered twice when discovering on overlapping paths.
+        Tests shouldn't be discovered twice when discovering on overlapping
+        paths.
         """
         base_app = "forms_tests"
         sub_app = "forms_tests.field_tests"
@@ -658,9 +669,10 @@ class DiscoverRunnerTests(SimpleTestCase):
     @mock.patch("faulthandler.enable")
     def test_faulthandler_enabled_fileno(self, mocked_enable):
         # sys.stderr that is not an actual file.
-        with mock.patch(
-            "faulthandler.is_enabled", return_value=False
-        ), captured_stderr():
+        with (
+            mock.patch("faulthandler.is_enabled", return_value=False),
+            captured_stderr(),
+        ):
             DiscoverRunner(enable_faulthandler=True)
             mocked_enable.assert_called()
 
@@ -766,7 +778,6 @@ class DiscoverRunnerTests(SimpleTestCase):
                 failures = runner.suite_result(suite, result)
                 self.assertEqual(failures, expected_failures)
 
-    @unittest.skipUnless(PY312, "unittest --durations option requires Python 3.12")
     def test_durations(self):
         with captured_stderr() as stderr, captured_stdout():
             runner = DiscoverRunner(durations=10)
@@ -774,7 +785,6 @@ class DiscoverRunnerTests(SimpleTestCase):
             runner.run_suite(suite)
         self.assertIn("Slowest test durations", stderr.getvalue())
 
-    @unittest.skipUnless(PY312, "unittest --durations option requires Python 3.12")
     def test_durations_debug_sql(self):
         with captured_stderr() as stderr, captured_stdout():
             runner = DiscoverRunner(durations=10, debug_sql=True)

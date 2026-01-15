@@ -1,8 +1,9 @@
 """
- This module houses the GEOSCoordSeq object, which is used internally
- by GEOSGeometry to house the actual coordinates of the Point,
- LineString, and LinearRing geometries.
+This module houses the GEOSCoordSeq object, which is used internally
+by GEOSGeometry to house the actual coordinates of the Point,
+LineString, and LinearRing geometries.
 """
+
 from ctypes import byref, c_byte, c_double, c_uint
 
 from django.contrib.gis.geos import prototypes as capi
@@ -69,12 +70,12 @@ class GEOSCoordSeq(GEOSBase):
     def _checkindex(self, index):
         "Check the given index."
         if not (0 <= index < self.size):
-            raise IndexError("invalid GEOS Geometry index: %s" % index)
+            raise IndexError(f"Invalid GEOS Geometry index: {index}")
 
     def _checkdim(self, dim):
         "Check the given dimension."
         if dim < 0 or dim > 2:
-            raise GEOSException('invalid ordinate dimension "%d"' % dim)
+            raise GEOSException(f'Invalid ordinate dimension: "{dim:d}"')
 
     def _get_x(self, index):
         return capi.cs_getx(self.ptr, index, byref(c_double()))
@@ -179,8 +180,8 @@ class GEOSCoordSeq(GEOSBase):
     @property
     def kml(self):
         "Return the KML representation for the coordinates."
-        # Getting the substitution string depending on whether the coordinates have
-        #  a Z dimension.
+        # Getting the substitution string depending on whether the coordinates
+        # have a Z dimension.
         if self.hasz:
             substr = "%s,%s,%s "
         else:

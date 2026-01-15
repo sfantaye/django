@@ -67,12 +67,12 @@ This is used by the
 default.
 
 By default, collected files receive permissions from
-:setting:`FILE_UPLOAD_PERMISSIONS` and collected directories receive permissions
-from :setting:`FILE_UPLOAD_DIRECTORY_PERMISSIONS`. If you would like different
-permissions for these files and/or directories, you can subclass either of the
-:ref:`static files storage classes <staticfiles-storages>` and specify the
-``file_permissions_mode`` and/or ``directory_permissions_mode`` parameters,
-respectively. For example::
+:setting:`FILE_UPLOAD_PERMISSIONS` and collected directories receive
+permissions from :setting:`FILE_UPLOAD_DIRECTORY_PERMISSIONS`. If you would
+like different permissions for these files and/or directories, you can subclass
+either of the :ref:`static files storage classes <staticfiles-storages>` and
+specify the ``file_permissions_mode`` and/or ``directory_permissions_mode``
+parameters, respectively. For example::
 
     from django.contrib.staticfiles import storage
 
@@ -280,10 +280,11 @@ counterparts and update the cache appropriately.
 
 .. class:: storage.ManifestStaticFilesStorage
 
-A subclass of the :class:`~django.contrib.staticfiles.storage.StaticFilesStorage`
-storage backend which stores the file names it handles by appending the MD5
-hash of the file's content to the filename. For example, the file
-``css/styles.css`` would also be saved as ``css/styles.55e7cbb9ba48.css``.
+A subclass of the
+:class:`~django.contrib.staticfiles.storage.StaticFilesStorage` storage backend
+which stores the file names it handles by appending the MD5 hash of the file's
+content to the filename. For example, the file ``css/styles.css`` would also be
+saved as ``css/styles.55e7cbb9ba48.css``.
 
 The purpose of this storage is to keep serving the old files in case some
 pages still refer to those files, e.g. because they are cached by you or
@@ -321,6 +322,16 @@ For example, the ``'css/styles.css'`` file with this content:
 .. code-block:: css
 
     @import url("../admin/css/base.27e20196a850.css");
+
+.. admonition:: Usage of the ``integrity`` HTML attribute with local files
+
+    When using the optional ``integrity`` attribute within tags like
+    ``<script>`` or ``<link>``, its value should be calculated based on the
+    files as they are served, not as stored in the filesystem. This is
+    particularly important because depending on how static files are collected,
+    their checksum may have changed (for example when using
+    :djadmin:`collectstatic`). At the moment, there is no out-of-the-box
+    tooling available for this.
 
 You can change the location of the manifest file by using a custom
 ``ManifestStaticFilesStorage`` subclass that sets the ``manifest_storage``
@@ -402,7 +413,7 @@ hashing algorithm.
 .. _`@import`: https://www.w3.org/TR/CSS2/cascade.html#at-import
 .. _`url()`: https://www.w3.org/TR/CSS2/syndata.html#uri
 .. _`Cascading Style Sheets`: https://www.w3.org/Style/CSS/
-.. _`source map`: https://developer.mozilla.org/en-US/docs/Tools/Debugger/How_to/Use_a_source_map
+.. _`source map`: https://firefox-source-docs.mozilla.org/devtools-user/debugger/how_to/use_a_source_map/
 .. _`modules import`: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Modules#importing_features_into_your_script
 .. _`modules aggregation`: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Guide/Modules#aggregating_modules
 
@@ -481,7 +492,7 @@ This view function serves static files in development.
 .. note::
 
     To guess the served files' content types, this view relies on the
-    :py:mod:`mimetypes` module from the Python standard library, which itself
+    :mod:`mimetypes` module from the Python standard library, which itself
     relies on the underlying platform's map files. If you find that this view
     doesn't return proper content types for certain files, it is most likely
     that the platform's map files are incorrect or need to be updated. This can
@@ -541,12 +552,13 @@ Specialized test case to support 'live testing'
 
 .. class:: testing.StaticLiveServerTestCase
 
-This unittest TestCase subclass extends :class:`django.test.LiveServerTestCase`.
+This unittest TestCase subclass extends
+:class:`django.test.LiveServerTestCase`.
 
 Just like its parent, you can use it to write tests that involve running the
-code under test and consuming it with testing tools through HTTP (e.g. Selenium,
-PhantomJS, etc.), because of which it's needed that the static assets are also
-published.
+code under test and consuming it with testing tools through HTTP (e.g.
+Selenium, PhantomJS, etc.), because of which it's needed that the static assets
+are also published.
 
 But given the fact that it makes use of the
 :func:`django.contrib.staticfiles.views.serve` view described above, it can

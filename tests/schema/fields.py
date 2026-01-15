@@ -41,9 +41,11 @@ class CustomManyToManyField(RelatedField):
             related_name=related_name,
             related_query_name=related_query_name,
             limit_choices_to=limit_choices_to,
-            symmetrical=symmetrical
-            if symmetrical is not None
-            else (to == RECURSIVE_RELATIONSHIP_CONSTANT),
+            symmetrical=(
+                symmetrical
+                if symmetrical is not None
+                else (to == RECURSIVE_RELATIONSHIP_CONSTANT)
+            ),
             through=through,
             through_fields=through_fields,
             db_constraint=db_constraint,
@@ -82,7 +84,8 @@ class CustomManyToManyField(RelatedField):
     def get_internal_type(self):
         return "ManyToManyField"
 
-    # Copy those methods from ManyToManyField because they don't call super() internally
+    # Copy those methods from ManyToManyField because they don't call super()
+    # internally
     contribute_to_related_class = models.ManyToManyField.__dict__[
         "contribute_to_related_class"
     ]

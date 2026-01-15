@@ -78,7 +78,8 @@ class ExecutorTests(MigrationTestBase):
     )
     def test_run_with_squashed(self):
         """
-        Tests running a squashed migration from zero (should ignore what it replaces)
+        Tests running a squashed migration from zero (should ignore what it
+        replaces)
         """
         executor = MigrationExecutor(connection)
         # Check our leaf node is the squashed one
@@ -351,7 +352,8 @@ class ExecutorTests(MigrationTestBase):
         self.assertTableExists("migrations_tribble")
         # Make sure that was faked
         self.assertIs(state["faked"], True)
-        # Finally, migrate forwards; this should fake-apply our initial migration
+        # Finally, migrate forwards; this should fake-apply our initial
+        # migration
         executor.loader.build_graph()
         self.assertEqual(
             executor.migration_plan([("migrations", "0001_initial")]),
@@ -383,8 +385,8 @@ class ExecutorTests(MigrationTestBase):
     )
     def test_custom_user(self):
         """
-        Regression test for #22325 - references to a custom user model defined in the
-        same app are not resolved correctly.
+        Regression test for #22325 - references to a custom user model defined
+        in the same app are not resolved correctly.
         """
         with isolate_lru_cache(global_apps.get_swappable_settings_name):
             executor = MigrationExecutor(connection)
@@ -405,9 +407,9 @@ class ExecutorTests(MigrationTestBase):
             migrations_apps = executor.loader.project_state(
                 ("migrations", "0001_initial"),
             ).apps
-            global_apps.get_app_config("migrations").models[
-                "author"
-            ] = migrations_apps.get_model("migrations", "author")
+            global_apps.get_app_config("migrations").models["author"] = (
+                migrations_apps.get_model("migrations", "author")
+            )
             try:
                 migration = executor.loader.get_migration("auth", "0001_initial")
                 self.assertIs(executor.detect_soft_applied(None, migration)[0], True)

@@ -1,17 +1,36 @@
+import uuid
+from decimal import Decimal
+
+from django.apps import apps
+from django.core.exceptions import ValidationError
 from django.db import IntegrityError, connection
-from django.db.models import F, FloatField, GeneratedField, IntegerField, Model
+from django.db.models import (
+    CharField,
+    F,
+    FloatField,
+    GeneratedField,
+    IntegerField,
+    Model,
+)
 from django.db.models.functions import Lower
 from django.test import SimpleTestCase, TestCase, skipUnlessDBFeature
 from django.test.utils import isolate_apps
 
 from .models import (
+    Foo,
     GeneratedModel,
+    GeneratedModelCheckConstraint,
+    GeneratedModelCheckConstraintVirtual,
+    GeneratedModelFieldWithConverters,
+    GeneratedModelNonAutoPk,
     GeneratedModelNull,
     GeneratedModelNullVirtual,
-    GeneratedModelOutputField,
-    GeneratedModelOutputFieldVirtual,
+    GeneratedModelOutputFieldDbCollation,
+    GeneratedModelOutputFieldDbCollationVirtual,
     GeneratedModelParams,
     GeneratedModelParamsVirtual,
+    GeneratedModelUniqueConstraint,
+    GeneratedModelUniqueConstraintVirtual,
     GeneratedModelVirtual,
 )
 
@@ -19,43 +38,103 @@ from .models import (
 class BaseGeneratedFieldTests(SimpleTestCase):
     def test_editable_unsupported(self):
         with self.assertRaisesMessage(ValueError, "GeneratedField cannot be editable."):
-            GeneratedField(expression=Lower("name"), editable=True, db_persist=False)
+            GeneratedField(
+                expression=Lower("name"),
+                output_field=CharField(max_length=255),
+                editable=True,
+                db_persist=False,
+            )
+
+    @isolate_apps("model_fields")
+    def test_contribute_to_class(self):
+        class BareModel(Model):
+            pass
+
+        new_field = GeneratedField(
+            expression=Lower("nonexistent"),
+            output_field=IntegerField(),
+            db_persist=True,
+        )
+        apps.models_ready = False
+        try:
+            # GeneratedField can be added to the model even when apps are not
+            # fully loaded.
+            new_field.contribute_to_class(BareModel, "name")
+            self.assertEqual(BareModel._meta.get_field("name"), new_field)
+        finally:
+            apps.models_ready = True
 
     def test_blank_unsupported(self):
         with self.assertRaisesMessage(ValueError, "GeneratedField must be blank."):
-            GeneratedField(expression=Lower("name"), blank=False, db_persist=False)
+            GeneratedField(
+                expression=Lower("name"),
+                output_field=CharField(max_length=255),
+                blank=False,
+                db_persist=False,
+            )
 
     def test_default_unsupported(self):
         msg = "GeneratedField cannot have a default."
         with self.assertRaisesMessage(ValueError, msg):
-            GeneratedField(expression=Lower("name"), default="", db_persist=False)
+            GeneratedField(
+                expression=Lower("name"),
+                output_field=CharField(max_length=255),
+                default="",
+                db_persist=False,
+            )
 
     def test_database_default_unsupported(self):
         msg = "GeneratedField cannot have a database default."
         with self.assertRaisesMessage(ValueError, msg):
-            GeneratedField(expression=Lower("name"), db_default="", db_persist=False)
+            GeneratedField(
+                expression=Lower("name"),
+                output_field=CharField(max_length=255),
+                db_default="",
+                db_persist=False,
+            )
 
     def test_db_persist_required(self):
+        with self.assertRaises(TypeError):
+            GeneratedField(
+                expression=Lower("name"), output_field=CharField(max_length=255)
+            )
         msg = "GeneratedField.db_persist must be True or False."
         with self.assertRaisesMessage(ValueError, msg):
-            GeneratedField(expression=Lower("name"))
-        with self.assertRaisesMessage(ValueError, msg):
-            GeneratedField(expression=Lower("name"), db_persist=None)
+            GeneratedField(
+                expression=Lower("name"),
+                output_field=CharField(max_length=255),
+                db_persist=None,
+            )
 
     def test_deconstruct(self):
-        field = GeneratedField(expression=F("a") + F("b"), db_persist=True)
+        field = GeneratedField(
+            expression=F("a") + F("b"), output_field=IntegerField(), db_persist=True
+        )
         _, path, args, kwargs = field.deconstruct()
         self.assertEqual(path, "django.db.models.GeneratedField")
         self.assertEqual(args, [])
-        self.assertEqual(kwargs, {"db_persist": True, "expression": F("a") + F("b")})
+        self.assertEqual(kwargs["db_persist"], True)
+        self.assertEqual(kwargs["expression"], F("a") + F("b"))
+        self.assertEqual(
+            kwargs["output_field"].deconstruct(), IntegerField().deconstruct()
+        )
 
     @isolate_apps("model_fields")
     def test_get_col(self):
         class Square(Model):
             side = IntegerField()
-            area = GeneratedField(expression=F("side") * F("side"), db_persist=True)
+            area = GeneratedField(
+                expression=F("side") * F("side"),
+                output_field=IntegerField(),
+                db_persist=True,
+            )
 
-        col = Square._meta.get_field("area").get_col("alias")
+        field = Square._meta.get_field("area")
+
+        col = field.get_col("alias")
+        self.assertIsInstance(col.output_field, IntegerField)
+
+        col = field.get_col("alias", field)
         self.assertIsInstance(col.output_field, IntegerField)
 
         class FloatSquare(Model):
@@ -66,7 +145,12 @@ class BaseGeneratedFieldTests(SimpleTestCase):
                 output_field=FloatField(),
             )
 
-        col = FloatSquare._meta.get_field("area").get_col("alias")
+        field = FloatSquare._meta.get_field("area")
+
+        col = field.get_col("alias")
+        self.assertIsInstance(col.output_field, FloatField)
+
+        col = field.get_col("alias", field)
         self.assertIsInstance(col.output_field, FloatField)
 
     @isolate_apps("model_fields")
@@ -74,7 +158,9 @@ class BaseGeneratedFieldTests(SimpleTestCase):
         class Sum(Model):
             a = IntegerField()
             b = IntegerField()
-            total = GeneratedField(expression=F("a") + F("b"), db_persist=True)
+            total = GeneratedField(
+                expression=F("a") + F("b"), output_field=IntegerField(), db_persist=True
+            )
 
         field = Sum._meta.get_field("total")
         cached_col = field.cached_col
@@ -87,21 +173,72 @@ class BaseGeneratedFieldTests(SimpleTestCase):
 
 
 class GeneratedFieldTestMixin:
-    def _refresh_if_needed(self, m):
-        if not connection.features.can_return_columns_from_insert:
-            m.refresh_from_db()
-        return m
-
     def test_unsaved_error(self):
         m = self.base_model(a=1, b=2)
-        msg = "Cannot read a generated field from an unsaved model."
+        msg = "Cannot retrieve deferred field 'field' from an unsaved model."
         with self.assertRaisesMessage(AttributeError, msg):
             m.field
 
+    def test_full_clean(self):
+        m = self.base_model(a=1, b=2)
+        # full_clean() ignores GeneratedFields.
+        m.full_clean()
+        m.save()
+        expected_num_queries = (
+            0 if connection.features.can_return_columns_from_insert else 1
+        )
+        with self.assertNumQueries(expected_num_queries):
+            self.assertEqual(m.field, 3)
+
+    @skipUnlessDBFeature("supports_table_check_constraints")
+    def test_full_clean_with_check_constraint(self):
+        model_name = self.check_constraint_model._meta.verbose_name.capitalize()
+
+        m = self.check_constraint_model(a=2)
+        m.full_clean()
+        m.save()
+        expected_num_queries = (
+            0 if connection.features.can_return_columns_from_insert else 1
+        )
+        with self.assertNumQueries(expected_num_queries):
+            self.assertEqual(m.a_squared, 4)
+
+        m = self.check_constraint_model(a=-1)
+        with self.assertRaises(ValidationError) as cm:
+            m.full_clean()
+        self.assertEqual(
+            cm.exception.message_dict,
+            {"__all__": [f"Constraint “{model_name} a > 0” is violated."]},
+        )
+
+    @skipUnlessDBFeature("supports_expression_indexes")
+    def test_full_clean_with_unique_constraint_expression(self):
+        model_name = self.unique_constraint_model._meta.verbose_name.capitalize()
+
+        m = self.unique_constraint_model(a=2)
+        m.full_clean()
+        m.save()
+        expected_num_queries = (
+            0 if connection.features.can_return_columns_from_insert else 1
+        )
+        with self.assertNumQueries(expected_num_queries):
+            self.assertEqual(m.a_squared, 4)
+
+        m = self.unique_constraint_model(a=2)
+        with self.assertRaises(ValidationError) as cm:
+            m.full_clean()
+        self.assertEqual(
+            cm.exception.message_dict,
+            {"__all__": [f"Constraint “{model_name} a” is violated."]},
+        )
+
     def test_create(self):
         m = self.base_model.objects.create(a=1, b=2)
-        m = self._refresh_if_needed(m)
-        self.assertEqual(m.field, 3)
+        expected_num_queries = (
+            0 if connection.features.can_return_columns_from_insert else 1
+        )
+        with self.assertNumQueries(expected_num_queries):
+            self.assertEqual(m.field, 3)
 
     def test_non_nullable_create(self):
         with self.assertRaises(IntegrityError):
@@ -111,13 +248,58 @@ class GeneratedFieldTestMixin:
         # Insert.
         m = self.base_model(a=2, b=4)
         m.save()
-        m = self._refresh_if_needed(m)
-        self.assertEqual(m.field, 6)
+        expected_num_queries = (
+            0 if connection.features.can_return_columns_from_insert else 1
+        )
+        with self.assertNumQueries(expected_num_queries):
+            self.assertEqual(m.field, 6)
         # Update.
         m.a = 4
         m.save()
-        m.refresh_from_db()
-        self.assertEqual(m.field, 8)
+        expected_num_queries = (
+            0 if connection.features.can_return_rows_from_update else 1
+        )
+        with self.assertNumQueries(expected_num_queries):
+            self.assertEqual(m.field, 8)
+        # Update non-dependent field.
+        self.base_model.objects.filter(pk=m.pk).update(a=6)
+        m.save(update_fields=["fk"])
+        with self.assertNumQueries(0):
+            self.assertEqual(m.field, 8)
+        # Update dependent field without persisting local changes.
+        m.save(update_fields=["b"])
+        with self.assertNumQueries(expected_num_queries):
+            self.assertEqual(m.field, 10)
+        # Update dependent field while persisting local changes.
+        m.a = 8
+        m.save(update_fields=["a"])
+        with self.assertNumQueries(expected_num_queries):
+            self.assertEqual(m.field, 12)
+
+    def test_save_model_with_pk(self):
+        m = self.base_model(pk=1, a=1, b=2)
+        m.save()
+        expected_num_queries = (
+            0 if connection.features.can_return_columns_from_insert else 1
+        )
+        with self.assertNumQueries(expected_num_queries):
+            self.assertEqual(m.field, 3)
+
+    def test_save_model_with_foreign_key(self):
+        fk_object = Foo.objects.create(a="abc", d=Decimal("12.34"))
+        m = self.base_model(a=1, b=2, fk=fk_object)
+        m.save()
+        expected_num_queries = (
+            0 if connection.features.can_return_columns_from_insert else 1
+        )
+        with self.assertNumQueries(expected_num_queries):
+            self.assertEqual(m.field, 3)
+
+    def test_generated_fields_can_be_deferred(self):
+        fk_object = Foo.objects.create(a="abc", d=Decimal("12.34"))
+        m = self.base_model.objects.create(a=1, b=2, fk=fk_object)
+        m = self.base_model.objects.defer("field").get(id=m.id)
+        self.assertEqual(m.get_deferred_fields(), {"field"})
 
     def test_update(self):
         m = self.base_model.objects.create(a=1, b=2)
@@ -165,55 +347,80 @@ class GeneratedFieldTestMixin:
         with self.assertNumQueries(0), self.assertRaises(does_not_exist):
             self.base_model.objects.get(field__gte=overflow_value)
 
-    @skipUnlessDBFeature("supports_collation_on_charfield")
-    def test_output_field(self):
-        collation = connection.features.test_collations.get("non_default")
-        if not collation:
-            self.skipTest("Language collations are not supported.")
-
-        m = self.output_field_model.objects.create(name="NAME")
+    def test_output_field_db_collation(self):
+        collation = connection.features.test_collations["virtual"]
+        m = self.output_field_db_collation_model.objects.create(name="NAME")
         field = m._meta.get_field("lower_name")
         db_parameters = field.db_parameters(connection)
         self.assertEqual(db_parameters["collation"], collation)
         self.assertEqual(db_parameters["type"], field.output_field.db_type(connection))
-        self.assertNotEqual(
-            db_parameters["type"],
-            field._resolved_expression.output_field.db_type(connection),
-        )
 
-    @skipUnlessDBFeature("supports_collation_on_charfield")
     def test_db_type_parameters(self):
-        db_type_parameters = self.output_field_model._meta.get_field(
+        db_type_parameters = self.output_field_db_collation_model._meta.get_field(
             "lower_name"
         ).db_type_parameters(connection)
         self.assertEqual(db_type_parameters["max_length"], 11)
 
     def test_model_with_params(self):
         m = self.params_model.objects.create()
-        m = self._refresh_if_needed(m)
-        self.assertEqual(m.field, "Constant")
+        expected_num_queries = (
+            0 if connection.features.can_return_columns_from_insert else 1
+        )
+        with self.assertNumQueries(expected_num_queries):
+            self.assertEqual(m.field, "Constant")
 
     def test_nullable(self):
         m1 = self.nullable_model.objects.create()
-        m1 = self._refresh_if_needed(m1)
         none_val = "" if connection.features.interprets_empty_strings_as_nulls else None
-        self.assertEqual(m1.lower_name, none_val)
+        expected_num_queries = (
+            0 if connection.features.can_return_columns_from_insert else 1
+        )
+        with self.assertNumQueries(expected_num_queries):
+            self.assertEqual(m1.lower_name, none_val)
         m2 = self.nullable_model.objects.create(name="NaMe")
-        m2 = self._refresh_if_needed(m2)
-        self.assertEqual(m2.lower_name, "name")
+        with self.assertNumQueries(expected_num_queries):
+            self.assertEqual(m2.lower_name, "name")
 
 
 @skipUnlessDBFeature("supports_stored_generated_columns")
 class StoredGeneratedFieldTests(GeneratedFieldTestMixin, TestCase):
     base_model = GeneratedModel
     nullable_model = GeneratedModelNull
-    output_field_model = GeneratedModelOutputField
+    check_constraint_model = GeneratedModelCheckConstraint
+    unique_constraint_model = GeneratedModelUniqueConstraint
+    output_field_db_collation_model = GeneratedModelOutputFieldDbCollation
     params_model = GeneratedModelParams
+
+    def test_create_field_with_db_converters(self):
+        obj = GeneratedModelFieldWithConverters.objects.create(field=uuid.uuid4())
+        expected_num_queries = (
+            0 if connection.features.can_return_columns_from_insert else 1
+        )
+        with self.assertNumQueries(expected_num_queries):
+            self.assertEqual(obj.field, obj.field_copy)
+
+    def test_save_field_with_db_converters(self):
+        obj = GeneratedModelFieldWithConverters.objects.create(field=uuid.uuid4())
+        obj.field = uuid.uuid4()
+        expected_num_queries = (
+            0 if connection.features.can_return_rows_from_update else 1
+        )
+        obj.save(update_fields={"field"})
+        with self.assertNumQueries(expected_num_queries):
+            self.assertEqual(obj.field, obj.field_copy)
+
+    def test_create_with_non_auto_pk(self):
+        obj = GeneratedModelNonAutoPk.objects.create(id=1, a=2)
+        self.assertEqual(obj.id, 1)
+        self.assertEqual(obj.a, 2)
+        self.assertEqual(obj.b, 3)
 
 
 @skipUnlessDBFeature("supports_virtual_generated_columns")
 class VirtualGeneratedFieldTests(GeneratedFieldTestMixin, TestCase):
     base_model = GeneratedModelVirtual
     nullable_model = GeneratedModelNullVirtual
-    output_field_model = GeneratedModelOutputFieldVirtual
+    check_constraint_model = GeneratedModelCheckConstraintVirtual
+    unique_constraint_model = GeneratedModelUniqueConstraintVirtual
+    output_field_db_collation_model = GeneratedModelOutputFieldDbCollationVirtual
     params_model = GeneratedModelParamsVirtual

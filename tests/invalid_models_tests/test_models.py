@@ -145,6 +145,75 @@ class UniqueTogetherTests(SimpleTestCase):
 
         self.assertEqual(Bar.check(), [])
 
+    def test_pointing_to_composite_primary_key(self):
+        class Model(models.Model):
+            pk = models.CompositePrimaryKey("version", "name")
+            version = models.IntegerField()
+            name = models.CharField(max_length=20)
+
+            class Meta:
+                unique_together = [["pk"]]
+
+        self.assertEqual(
+            Model.check(),
+            [
+                Error(
+                    "'unique_together' refers to a CompositePrimaryKey 'pk', but "
+                    "CompositePrimaryKeys are not permitted in 'unique_together'.",
+                    obj=Model,
+                    id="models.E048",
+                ),
+            ],
+        )
+
+    def test_pointing_to_foreign_object(self):
+        class Reference(models.Model):
+            reference_id = models.IntegerField(unique=True)
+
+        class ReferenceTab(models.Model):
+            reference_id = models.IntegerField()
+            reference = models.ForeignObject(
+                Reference,
+                from_fields=["reference_id"],
+                to_fields=["reference_id"],
+                on_delete=models.CASCADE,
+            )
+
+            class Meta:
+                unique_together = [["reference"]]
+
+        self.assertEqual(ReferenceTab.check(), [])
+
+    def test_pointing_to_foreign_object_multi_column(self):
+        class Reference(models.Model):
+            reference_id = models.IntegerField(unique=True)
+            code = models.CharField(max_length=1)
+
+        class ReferenceTabMultiple(models.Model):
+            reference_id = models.IntegerField()
+            code = models.CharField(max_length=1)
+            reference = models.ForeignObject(
+                Reference,
+                from_fields=["reference_id", "code"],
+                to_fields=["reference_id", "code"],
+                on_delete=models.CASCADE,
+            )
+
+            class Meta:
+                unique_together = [["reference"]]
+
+        self.assertEqual(
+            ReferenceTabMultiple.check(),
+            [
+                Error(
+                    "'unique_together' refers to a ForeignObject 'reference' with "
+                    "multiple 'from_fields', which is not supported for that option.",
+                    obj=ReferenceTabMultiple,
+                    id="models.E049",
+                ),
+            ],
+        )
+
 
 @isolate_apps("invalid_models_tests")
 class IndexesTests(TestCase):
@@ -154,7 +223,7 @@ class IndexesTests(TestCase):
                 indexes = [models.Index(fields=["missing_field"], name="name")]
 
         self.assertEqual(
-            Model.check(),
+            Model.check(databases=self.databases),
             [
                 Error(
                     "'indexes' refers to the nonexistent field 'missing_field'.",
@@ -164,6 +233,15 @@ class IndexesTests(TestCase):
             ],
         )
 
+    def test_pointing_to_desc_field(self):
+        class Model(models.Model):
+            name = models.CharField(max_length=100)
+
+            class Meta:
+                indexes = [models.Index(fields=["-name"], name="index_name")]
+
+        self.assertEqual(Model.check(databases=self.databases), [])
+
     def test_pointing_to_m2m_field(self):
         class Model(models.Model):
             m2m = models.ManyToManyField("self")
@@ -172,7 +250,7 @@ class IndexesTests(TestCase):
                 indexes = [models.Index(fields=["m2m"], name="name")]
 
         self.assertEqual(
-            Model.check(),
+            Model.check(databases=self.databases),
             [
                 Error(
                     "'indexes' refers to a ManyToManyField 'm2m', but "
@@ -194,7 +272,7 @@ class IndexesTests(TestCase):
                 indexes = [models.Index(fields=["field2", "field1"], name="name")]
 
         self.assertEqual(
-            Bar.check(),
+            Bar.check(databases=self.databases),
             [
                 Error(
                     "'indexes' refers to field 'field1' which is not local to "
@@ -223,7 +301,28 @@ class IndexesTests(TestCase):
                     models.Index(fields=["foo_1_id", "foo_2"], name="index_name")
                 ]
 
-        self.assertEqual(Bar.check(), [])
+        self.assertEqual(Bar.check(databases=self.databases), [])
+
+    def test_pointing_to_composite_primary_key(self):
+        class Model(models.Model):
+            pk = models.CompositePrimaryKey("version", "name")
+            version = models.IntegerField()
+            name = models.CharField(max_length=20)
+
+            class Meta:
+                indexes = [models.Index(fields=["pk", "name"], name="name")]
+
+        self.assertEqual(
+            Model.check(databases=self.databases),
+            [
+                Error(
+                    "'indexes' refers to a CompositePrimaryKey 'pk', but "
+                    "CompositePrimaryKeys are not permitted in 'indexes'.",
+                    obj=Model,
+                    id="models.E048",
+                ),
+            ],
+        )
 
     def test_name_constraints(self):
         class Model(models.Model):
@@ -234,7 +333,7 @@ class IndexesTests(TestCase):
                 ]
 
         self.assertEqual(
-            Model.check(),
+            Model.check(databases=self.databases),
             [
                 Error(
                     "The index name '%sindex_name' cannot start with an "
@@ -254,7 +353,7 @@ class IndexesTests(TestCase):
                 indexes = [models.Index(fields=["id"], name=index_name)]
 
         self.assertEqual(
-            Model.check(),
+            Model.check(databases=self.databases),
             [
                 Error(
                     "The index name '%s' cannot be longer than 30 characters."
@@ -436,7 +535,7 @@ class IndexesTests(TestCase):
             fk_2 = models.ForeignKey(Target, models.CASCADE, related_name="target_2")
 
             class Meta:
-                constraints = [
+                indexes = [
                     models.Index(
                         fields=["id"],
                         include=["fk_1_id", "fk_2"],
@@ -445,6 +544,28 @@ class IndexesTests(TestCase):
                 ]
 
         self.assertEqual(Model.check(databases=self.databases), [])
+
+    @skipUnlessDBFeature("supports_covering_indexes")
+    def test_index_include_pointing_to_composite_primary_key(self):
+        class Model(models.Model):
+            pk = models.CompositePrimaryKey("version", "name")
+            version = models.IntegerField()
+            name = models.CharField(max_length=20)
+
+            class Meta:
+                indexes = [models.Index(fields=["name"], include=["pk"], name="name")]
+
+        self.assertEqual(
+            Model.check(databases=self.databases),
+            [
+                Error(
+                    "'indexes' refers to a CompositePrimaryKey 'pk', but "
+                    "CompositePrimaryKeys are not permitted in 'indexes'.",
+                    obj=Model,
+                    id="models.E048",
+                ),
+            ],
+        )
 
     def test_func_index(self):
         class Model(models.Model):
@@ -475,6 +596,7 @@ class IndexesTests(TestCase):
 
         self.assertEqual(Model.check(databases=self.databases), [])
 
+    @skipUnlessDBFeature("supports_expression_indexes")
     def test_func_index_complex_expression_custom_lookup(self):
         class Model(models.Model):
             height = models.IntegerField()
@@ -490,15 +612,16 @@ class IndexesTests(TestCase):
                 ]
 
         with register_lookup(models.IntegerField, Abs):
-            self.assertEqual(Model.check(), [])
+            self.assertEqual(Model.check(databases=self.databases), [])
 
+    @skipUnlessDBFeature("supports_expression_indexes")
     def test_func_index_pointing_to_missing_field(self):
         class Model(models.Model):
             class Meta:
                 indexes = [models.Index(Lower("missing_field").desc(), name="name")]
 
         self.assertEqual(
-            Model.check(),
+            Model.check(databases=self.databases),
             [
                 Error(
                     "'indexes' refers to the nonexistent field 'missing_field'.",
@@ -508,6 +631,7 @@ class IndexesTests(TestCase):
             ],
         )
 
+    @skipUnlessDBFeature("supports_expression_indexes")
     def test_func_index_pointing_to_missing_field_nested(self):
         class Model(models.Model):
             class Meta:
@@ -516,7 +640,7 @@ class IndexesTests(TestCase):
                 ]
 
         self.assertEqual(
-            Model.check(),
+            Model.check(databases=self.databases),
             [
                 Error(
                     "'indexes' refers to the nonexistent field 'missing_field'.",
@@ -526,6 +650,7 @@ class IndexesTests(TestCase):
             ],
         )
 
+    @skipUnlessDBFeature("supports_expression_indexes")
     def test_func_index_pointing_to_m2m_field(self):
         class Model(models.Model):
             m2m = models.ManyToManyField("self")
@@ -534,7 +659,7 @@ class IndexesTests(TestCase):
                 indexes = [models.Index(Lower("m2m"), name="name")]
 
         self.assertEqual(
-            Model.check(),
+            Model.check(databases=self.databases),
             [
                 Error(
                     "'indexes' refers to a ManyToManyField 'm2m', but "
@@ -545,6 +670,7 @@ class IndexesTests(TestCase):
             ],
         )
 
+    @skipUnlessDBFeature("supports_expression_indexes")
     def test_func_index_pointing_to_non_local_field(self):
         class Foo(models.Model):
             field1 = models.CharField(max_length=15)
@@ -554,7 +680,7 @@ class IndexesTests(TestCase):
                 indexes = [models.Index(Lower("field1"), name="name")]
 
         self.assertEqual(
-            Bar.check(),
+            Bar.check(databases=self.databases),
             [
                 Error(
                     "'indexes' refers to field 'field1' which is not local to "
@@ -566,6 +692,7 @@ class IndexesTests(TestCase):
             ],
         )
 
+    @skipUnlessDBFeature("supports_expression_indexes")
     def test_func_index_pointing_to_fk(self):
         class Foo(models.Model):
             pass
@@ -579,7 +706,29 @@ class IndexesTests(TestCase):
                     models.Index(Lower("foo_1_id"), Lower("foo_2"), name="index_name"),
                 ]
 
-        self.assertEqual(Bar.check(), [])
+        self.assertEqual(Bar.check(databases=self.databases), [])
+
+    @skipUnlessDBFeature("supports_expression_indexes")
+    def test_func_index_pointing_to_composite_primary_key(self):
+        class Model(models.Model):
+            pk = models.CompositePrimaryKey("version", "name")
+            version = models.IntegerField()
+            name = models.CharField(max_length=20)
+
+            class Meta:
+                indexes = [models.Index(Abs("pk"), name="name")]
+
+        self.assertEqual(
+            Model.check(databases=self.databases),
+            [
+                Error(
+                    "'indexes' refers to a CompositePrimaryKey 'pk', but "
+                    "CompositePrimaryKeys are not permitted in 'indexes'.",
+                    obj=Model,
+                    id="models.E048",
+                ),
+            ],
+        )
 
 
 @isolate_apps("invalid_models_tests")
@@ -1343,6 +1492,17 @@ class OtherModelTests(SimpleTestCase):
             ],
         )
 
+    def test_inherited_overriden_property_no_clash(self):
+        class Cheese:
+            @property
+            def filling_id(self):
+                pass
+
+        class Sandwich(Cheese, models.Model):
+            filling = models.ForeignKey("self", models.CASCADE)
+
+        self.assertEqual(Sandwich.check(), [])
+
     def test_single_primary_key(self):
         class Model(models.Model):
             foo = models.IntegerField(primary_key=True)
@@ -1855,7 +2015,9 @@ class ConstraintsTests(TestCase):
 
             class Meta:
                 constraints = [
-                    models.CheckConstraint(check=models.Q(age__gte=18), name="is_adult")
+                    models.CheckConstraint(
+                        condition=models.Q(age__gte=18), name="is_adult"
+                    )
                 ]
 
         errors = Model.check(databases=self.databases)
@@ -1880,7 +2042,9 @@ class ConstraintsTests(TestCase):
             class Meta:
                 required_db_features = {"supports_table_check_constraints"}
                 constraints = [
-                    models.CheckConstraint(check=models.Q(age__gte=18), name="is_adult")
+                    models.CheckConstraint(
+                        condition=models.Q(age__gte=18), name="is_adult"
+                    )
                 ]
 
         self.assertEqual(Model.check(databases=self.databases), [])
@@ -1892,21 +2056,24 @@ class ConstraintsTests(TestCase):
                 constraints = [
                     models.CheckConstraint(
                         name="name",
-                        check=models.Q(missing_field=2),
+                        condition=models.Q(missing_field=2),
                     ),
                 ]
 
         self.assertEqual(
             Model.check(databases=self.databases),
-            [
-                Error(
-                    "'constraints' refers to the nonexistent field 'missing_field'.",
-                    obj=Model,
-                    id="models.E012",
-                ),
-            ]
-            if connection.features.supports_table_check_constraints
-            else [],
+            (
+                [
+                    Error(
+                        "'constraints' refers to the nonexistent field "
+                        "'missing_field'.",
+                        obj=Model,
+                        id="models.E012",
+                    ),
+                ]
+                if connection.features.supports_table_check_constraints
+                else []
+            ),
         )
 
     @skipUnlessDBFeature("supports_table_check_constraints")
@@ -1916,7 +2083,7 @@ class ConstraintsTests(TestCase):
 
             class Meta:
                 constraints = [
-                    models.CheckConstraint(name="name", check=models.Q(parents=3)),
+                    models.CheckConstraint(name="name", condition=models.Q(parents=3)),
                 ]
 
         self.assertEqual(
@@ -1939,7 +2106,7 @@ class ConstraintsTests(TestCase):
                 constraints = [
                     models.CheckConstraint(
                         name="name",
-                        check=models.Q(model__isnull=True),
+                        condition=models.Q(model__isnull=True),
                     ),
                 ]
 
@@ -1961,7 +2128,7 @@ class ConstraintsTests(TestCase):
 
             class Meta:
                 constraints = [
-                    models.CheckConstraint(name="name", check=models.Q(m2m=2)),
+                    models.CheckConstraint(name="name", condition=models.Q(m2m=2)),
                 ]
 
         self.assertEqual(
@@ -1989,7 +2156,7 @@ class ConstraintsTests(TestCase):
                 constraints = [
                     models.CheckConstraint(
                         name="name",
-                        check=models.Q(fk_1_id=2) | models.Q(fk_2=2),
+                        condition=models.Q(fk_1_id=2) | models.Q(fk_2=2),
                     ),
                 ]
 
@@ -2004,7 +2171,7 @@ class ConstraintsTests(TestCase):
                 constraints = [
                     models.CheckConstraint(
                         name="name",
-                        check=models.Q(pk__gt=5) & models.Q(age__gt=models.F("pk")),
+                        condition=models.Q(pk__gt=5) & models.Q(age__gt=models.F("pk")),
                     ),
                 ]
 
@@ -2020,7 +2187,7 @@ class ConstraintsTests(TestCase):
 
             class Meta:
                 constraints = [
-                    models.CheckConstraint(name="name", check=models.Q(field1=1)),
+                    models.CheckConstraint(name="name", condition=models.Q(field1=1)),
                 ]
 
         self.assertEqual(
@@ -2050,20 +2217,21 @@ class ConstraintsTests(TestCase):
                 constraints = [
                     models.CheckConstraint(
                         name="name1",
-                        check=models.Q(
+                        condition=models.Q(
                             field1__lt=models.F("parent__field1")
                             + models.F("parent__field2")
                         ),
                     ),
                     models.CheckConstraint(
-                        name="name2", check=models.Q(name=Lower("parent__name"))
+                        name="name2", condition=models.Q(name=Lower("parent__name"))
                     ),
                     models.CheckConstraint(
-                        name="name3", check=models.Q(parent__field3=models.F("field1"))
+                        name="name3",
+                        condition=models.Q(parent__field3=models.F("field1")),
                     ),
                     models.CheckConstraint(
                         name="name4",
-                        check=models.Q(name=Lower("previous__name")),
+                        condition=models.Q(name=Lower("previous__name")),
                     ),
                 ]
 
@@ -2097,7 +2265,7 @@ class ConstraintsTests(TestCase):
                 constraints = [
                     models.CheckConstraint(
                         name="name",
-                        check=models.Q(
+                        condition=models.Q(
                             (
                                 models.Q(name="test")
                                 & models.Q(field1__lt=models.F("parent__field1"))
@@ -2133,16 +2301,18 @@ class ConstraintsTests(TestCase):
             class Meta:
                 required_db_features = {"supports_table_check_constraints"}
                 constraints = [
-                    models.CheckConstraint(check=models.Q(id__gt=0), name="q_check"),
                     models.CheckConstraint(
-                        check=models.ExpressionWrapper(
+                        condition=models.Q(id__gt=0), name="q_check"
+                    ),
+                    models.CheckConstraint(
+                        condition=models.ExpressionWrapper(
                             models.Q(price__gt=20),
                             output_field=models.BooleanField(),
                         ),
                         name="expression_wrapper_check",
                     ),
                     models.CheckConstraint(
-                        check=models.expressions.RawSQL(
+                        condition=models.expressions.RawSQL(
                             "id = 0",
                             params=(),
                             output_field=models.BooleanField(),
@@ -2150,7 +2320,7 @@ class ConstraintsTests(TestCase):
                         name="raw_sql_check",
                     ),
                     models.CheckConstraint(
-                        check=models.Q(
+                        condition=models.Q(
                             models.ExpressionWrapper(
                                 models.Q(
                                     models.expressions.RawSQL(
@@ -2187,6 +2357,33 @@ class ConstraintsTests(TestCase):
             else []
         )
         self.assertEqual(Model.check(databases=self.databases), expected_warnings)
+
+    @skipUnlessDBFeature("supports_table_check_constraints")
+    def test_check_constraint_pointing_to_composite_primary_key(self):
+        class Model(models.Model):
+            pk = models.CompositePrimaryKey("version", "name")
+            version = models.IntegerField()
+            name = models.CharField(max_length=20)
+
+            class Meta:
+                constraints = [
+                    models.CheckConstraint(
+                        name="name",
+                        condition=models.Q(pk__gt=(7, "focal")),
+                    ),
+                ]
+
+        self.assertEqual(
+            Model.check(databases=self.databases),
+            [
+                Error(
+                    "'constraints' refers to a CompositePrimaryKey 'pk', but "
+                    "CompositePrimaryKeys are not permitted in 'constraints'.",
+                    obj=Model,
+                    id="models.E048",
+                ),
+            ],
+        )
 
     def test_unique_constraint_with_condition(self):
         class Model(models.Model):
@@ -2252,15 +2449,18 @@ class ConstraintsTests(TestCase):
 
         self.assertEqual(
             Model.check(databases=self.databases),
-            [
-                Error(
-                    "'constraints' refers to the nonexistent field 'missing_field'.",
-                    obj=Model,
-                    id="models.E012",
-                ),
-            ]
-            if connection.features.supports_partial_indexes
-            else [],
+            (
+                [
+                    Error(
+                        "'constraints' refers to the nonexistent field "
+                        "'missing_field'.",
+                        obj=Model,
+                        id="models.E012",
+                    ),
+                ]
+                if connection.features.supports_partial_indexes
+                else []
+            ),
         )
 
     def test_unique_constraint_condition_pointing_to_joined_fields(self):
@@ -2280,15 +2480,17 @@ class ConstraintsTests(TestCase):
 
         self.assertEqual(
             Model.check(databases=self.databases),
-            [
-                Error(
-                    "'constraints' refers to the joined field 'parent__age__lt'.",
-                    obj=Model,
-                    id="models.E041",
-                )
-            ]
-            if connection.features.supports_partial_indexes
-            else [],
+            (
+                [
+                    Error(
+                        "'constraints' refers to the joined field 'parent__age__lt'.",
+                        obj=Model,
+                        id="models.E041",
+                    )
+                ]
+                if connection.features.supports_partial_indexes
+                else []
+            ),
         )
 
     def test_unique_constraint_pointing_to_reverse_o2o(self):
@@ -2307,15 +2509,17 @@ class ConstraintsTests(TestCase):
 
         self.assertEqual(
             Model.check(databases=self.databases),
-            [
-                Error(
-                    "'constraints' refers to the nonexistent field 'model'.",
-                    obj=Model,
-                    id="models.E012",
-                ),
-            ]
-            if connection.features.supports_partial_indexes
-            else [],
+            (
+                [
+                    Error(
+                        "'constraints' refers to the nonexistent field 'model'.",
+                        obj=Model,
+                        id="models.E012",
+                    ),
+                ]
+                if connection.features.supports_partial_indexes
+                else []
+            ),
         )
 
     def test_deferrable_unique_constraint(self):
@@ -2442,6 +2646,27 @@ class ConstraintsTests(TestCase):
                 ]
 
         self.assertEqual(Model.check(databases=self.databases), [])
+
+    def test_unique_constraint_pointing_to_composite_primary_key(self):
+        class Model(models.Model):
+            pk = models.CompositePrimaryKey("version", "name")
+            version = models.IntegerField()
+            name = models.CharField(max_length=20)
+
+            class Meta:
+                constraints = [models.UniqueConstraint(fields=["pk"], name="name")]
+
+        self.assertEqual(
+            Model.check(databases=self.databases),
+            [
+                Error(
+                    "'constraints' refers to a CompositePrimaryKey 'pk', but "
+                    "CompositePrimaryKeys are not permitted in 'constraints'.",
+                    obj=Model,
+                    id="models.E048",
+                ),
+            ],
+        )
 
     def test_unique_constraint_with_include(self):
         class Model(models.Model):
@@ -2590,6 +2815,34 @@ class ConstraintsTests(TestCase):
 
         self.assertEqual(Model.check(databases=self.databases), [])
 
+    @skipUnlessDBFeature("supports_covering_indexes")
+    def test_unique_constraint_include_pointing_to_composite_primary_key(self):
+        class Model(models.Model):
+            pk = models.CompositePrimaryKey("version", "name")
+            version = models.IntegerField()
+            name = models.CharField(max_length=20)
+
+            class Meta:
+                constraints = [
+                    models.UniqueConstraint(
+                        fields=["version"],
+                        include=["pk"],
+                        name="name",
+                    ),
+                ]
+
+        self.assertEqual(
+            Model.check(databases=self.databases),
+            [
+                Error(
+                    "'constraints' refers to a CompositePrimaryKey 'pk', but "
+                    "CompositePrimaryKeys are not permitted in 'constraints'.",
+                    obj=Model,
+                    id="models.E048",
+                ),
+            ],
+        )
+
     def test_func_unique_constraint(self):
         class Model(models.Model):
             name = models.CharField(max_length=10)
@@ -2638,8 +2891,8 @@ class ConstraintsTests(TestCase):
                 ]
 
         warn = Warning(
-            f"{connection.display_name} does not support unique constraints with nulls "
-            "distinct.",
+            f"{connection.display_name} does not support "
+            "UniqueConstraint.nulls_distinct.",
             hint=(
                 "A constraint won't be created. Silence this warning if you don't care "
                 "about it."
@@ -2787,3 +3040,86 @@ class ConstraintsTests(TestCase):
                 ]
 
         self.assertEqual(Bar.check(databases=self.databases), [])
+
+    @skipUnlessDBFeature("supports_expression_indexes")
+    def test_func_unique_constraint_pointing_composite_primary_key(self):
+        class Model(models.Model):
+            pk = models.CompositePrimaryKey("version", "name")
+            version = models.IntegerField()
+            name = models.CharField(max_length=20)
+
+            class Meta:
+                constraints = [models.UniqueConstraint(Abs("pk"), name="name")]
+
+        self.assertEqual(
+            Model.check(databases=self.databases),
+            [
+                Error(
+                    "'constraints' refers to a CompositePrimaryKey 'pk', but "
+                    "CompositePrimaryKeys are not permitted in 'constraints'.",
+                    obj=Model,
+                    id="models.E048",
+                ),
+            ],
+        )
+
+
+@isolate_apps("invalid_models_tests")
+class RelatedFieldTests(SimpleTestCase):
+    def test_on_delete_python_db_variants(self):
+        class Artist(models.Model):
+            pass
+
+        class Album(models.Model):
+            artist = models.ForeignKey(Artist, models.CASCADE)
+
+        class Song(models.Model):
+            album = models.ForeignKey(Album, models.RESTRICT)
+            artist = models.ForeignKey(Artist, models.DB_CASCADE)
+
+        self.assertEqual(
+            Song.check(databases=self.databases),
+            [
+                Error(
+                    "The model cannot have related fields with both database-level and "
+                    "Python-level on_delete variants.",
+                    obj=Song,
+                    id="models.E050",
+                ),
+            ],
+        )
+
+    def test_on_delete_python_db_variants_auto_created(self):
+        class SharedModel(models.Model):
+            pass
+
+        class Parent(models.Model):
+            pass
+
+        class Child(SharedModel):
+            parent = models.ForeignKey(Parent, on_delete=models.DB_CASCADE)
+
+        self.assertEqual(
+            Child.check(databases=self.databases),
+            [
+                Error(
+                    "The model cannot have related fields with both database-level and "
+                    "Python-level on_delete variants.",
+                    obj=Child,
+                    id="models.E050",
+                ),
+            ],
+        )
+
+    def test_on_delete_db_do_nothing(self):
+        class Artist(models.Model):
+            pass
+
+        class Album(models.Model):
+            artist = models.ForeignKey(Artist, models.CASCADE)
+
+        class Song(models.Model):
+            album = models.ForeignKey(Album, models.DO_NOTHING)
+            artist = models.ForeignKey(Artist, models.DB_CASCADE)
+
+        self.assertEqual(Song.check(databases=self.databases), [])

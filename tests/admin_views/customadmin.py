@@ -1,6 +1,7 @@
 """
 A second, custom AdminSite -- see tests.CustomAdminSiteTests.
 """
+
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin
 from django.contrib.auth.models import User
@@ -17,6 +18,7 @@ class Admin2(admin.AdminSite):
     login_template = "custom_admin/login.html"
     logout_template = "custom_admin/logout.html"
     index_template = ["custom_admin/index.html"]  # a list, to test fix for #18697
+    password_change_form = forms.CustomAdminPasswordChangeForm
     password_change_template = "custom_admin/password_change_form.html"
     password_change_done_template = "custom_admin/password_change_done.html"
 
